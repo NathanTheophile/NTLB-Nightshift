@@ -7,6 +7,7 @@ import { closeWorkspaceTab, reorderWorkspaceTabs } from '@shared/domain/workspac
 import { assets } from './assets';
 import { EmptyState } from './components/EmptyState';
 import { PlannerView } from './components/PlannerView';
+import { RunsView } from './components/RunsView';
 import { PlaceholderView } from './components/PlaceholderView';
 import { QuickActions } from './components/QuickActions';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -167,6 +168,8 @@ export const App = () => {
             <PlannerView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : activeSection === 'workers' ? (
             <WorkersView />
+          ) : activeSection === 'runs' ? (
+            <RunsView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : (
             <PlaceholderView section={activeSection} />
           )}

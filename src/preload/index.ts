@@ -33,6 +33,11 @@ const api: NightShiftApi = {
     createTask: (input) => invoke(IPC_CHANNELS.plannerCreateTask, input),
     archiveTask: (taskId) => invoke(IPC_CHANNELS.plannerArchiveTask, { taskId }),
   },
+  runs: {
+    list: (workspaceId) => invoke(IPC_CHANNELS.runsList, { workspaceId }),
+    events: (runId) => invoke(IPC_CHANNELS.runsEvents, { runId }),
+    cancel: (runId) => invoke(IPC_CHANNELS.runsCancel, { runId }),
+  },
   launcher: {
     openWorkspaceTool: (request) => invoke(IPC_CHANNELS.launcherOpenWorkspaceTool, request),
     configureIde: () => invoke(IPC_CHANNELS.launcherConfigureIde, undefined),

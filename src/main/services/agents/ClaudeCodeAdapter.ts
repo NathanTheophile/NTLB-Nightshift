@@ -125,6 +125,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       if (parser.sessionId && handleReference.current) {
         handleReference.current.externalSessionId = parser.sessionId;
       }
+      spec.onProtocolEvent?.(protocolEvents[protocolEvents.length - 1]!);
     };
     const unsubscribe = this.supervisor.subscribe(handleId, (event) => {
       if (isStdout(event)) {

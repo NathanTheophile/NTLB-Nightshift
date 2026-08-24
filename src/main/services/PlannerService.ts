@@ -4,11 +4,13 @@ import type { PlannerTask } from '@shared/domain/entities';
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
 import type { PlannerService as PlannerServiceContract } from './contracts/PlannerService';
+import type { RunService } from './contracts/RunService';
 
 export class PlannerService implements PlannerServiceContract {
   public constructor(
     private readonly tasks: PlannerTaskRepository,
     private readonly workspaces: WorkspaceRepository,
+    private readonly runs?: RunService,
   ) {}
 
   public listTasks(workspaceId: string): PlannerTask[] {
@@ -26,7 +28,9 @@ export class PlannerService implements PlannerServiceContract {
       throw new Error('Planner priority must be an integer between 1 and 99.');
     }
 
-    return this.tasks.create({ ...input, prompt });
+    const task = this.tasks.create({ ...input, prompt });
+    this.runs?.schedule();
+    return task;
   }
 
   public archiveTask(taskId: string): PlannerTask {

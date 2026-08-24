@@ -28,21 +28,16 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
 
   useEffect(() => {
     let active = true;
-    void window.nightShift.planner
-      .listTasks(workspace.id)
-      .then((persistedTasks) => {
-        if (active) {
-          setTasks(persistedTasks);
-        }
-      })
-      .catch((error: unknown) => onError(messageFrom(error)))
-      .finally(() => {
-        if (active) {
-          setLoading(false);
-        }
-      });
+    const refresh = (): void => {
+      void window.nightShift.planner.listTasks(workspace.id).then((persistedTasks) => {
+        if (active) setTasks(persistedTasks);
+      }).catch((error: unknown) => onError(messageFrom(error))).finally(() => { if (active) setLoading(false); });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 1_500);
     return () => {
       active = false;
+      window.clearInterval(interval);
     };
   }, [onError, workspace.id]);
 
@@ -87,7 +82,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
           <EmptyState
             eyebrow="PLANNER LOCAL"
             title="Aucune tâche en attente"
-            detail="Créez une intention de travail. Elle sera persistée maintenant, mais ne sera pas exécutée avant le prochain jalon FCC / Runs."
+            detail="Créez une intention de travail. NightShift l’exécutera dans un worktree Git isolé."
           />
         )}
         {tasks.map((task, index) => (
@@ -125,13 +120,13 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
           <label>
             <span>Agent</span>
             <select aria-label="Agent" value="auto" disabled>
-              <option value="auto">Auto · prochain jalon</option>
+              <option value="auto">Auto · Claude Code</option>
             </select>
           </label>
           <label>
             <span>Modèle</span>
             <select aria-label="Modèle" value="auto" disabled>
-              <option value="auto">Auto · FCC non connecté</option>
+              <option value="auto">Auto · Nemotron Super</option>
             </select>
           </label>
           <label>
@@ -152,7 +147,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             {saving ? 'Enregistrement…' : 'Ajouter à la file'}
           </button>
         </div>
-        <p className="runtime-note">La file est persistée. Aucun agent ne sera lancé dans ce bootstrap.</p>
+        <p className="runtime-note">Une seule tâche Planner s’exécute à la fois, dans un worktree isolé.</p>
       </form>
     </section>
   );

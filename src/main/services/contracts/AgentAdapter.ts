@@ -6,6 +6,7 @@ export interface RunStartSpec {
   workingDirectory: string;
   prompt: string;
   modelId: string;
+  onProtocolEvent?: (event: AgentProtocolEvent) => void;
 }
 
 export interface WorkerStartSpec {
