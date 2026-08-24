@@ -27,6 +27,7 @@ export class RunRepository {
   public findRequired(id: string): Run { const run = this.find(id); if (!run) throw new Error(`Run ${id} was not found.`); return run; }
   public list(workspaceId: string): Run[] { return this.database.queryAll<RunRow>('SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at DESC', workspaceId).map(mapRun); }
   public setPreparation(id: string, baseSha: string, worktreePath: string): Run { this.update(id, { base_sha: baseSha, worktree_path: worktreePath }); return this.findRequired(id); }
+  public setBaseSha(id: string, baseSha: string): Run { this.update(id, { base_sha: baseSha }); return this.findRequired(id); }
   public setStatus(id: string, status: RunStatus, values: Partial<Pick<RunRow, 'started_at' | 'finished_at' | 'exit_code' | 'result_summary' | 'failure_reason' | 'validation_status' | 'external_session_id' | 'final_head_sha' | 'final_git_state'>> = {}): Run {
     this.update(id, { status, ...values }); return this.findRequired(id);
   }

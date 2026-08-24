@@ -14,12 +14,22 @@ import { WorkspaceRepository } from '../src/main/persistence/repositories/Worksp
 import { GitWorktreeService } from '../src/main/services/GitWorktreeService';
 import { RunService } from '../src/main/services/RunService';
 import type { AgentAdapter, AgentExecutionHandle, AgentExecutionResult, RunStartSpec } from '../src/main/services/contracts/AgentAdapter';
+import type { WorktreeHandle, WorktreeService, WorktreeSpec } from '../src/main/services/contracts/WorktreeService';
 import type { AgentCapabilities, AgentDescriptor, Run } from '../src/shared/domain/entities';
 
 const exec = promisify(execFile);
 const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
 
 describe('Planner Run vertical slice', () => {
+  it('persists the supplied base SHA when creating an attempt', async () => {
+    const fixture = await setup();
+    try {
+      const task = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Persist base.', requestedAgentId: null, requestedModelId: null, priority: 1 });
+      const run = await fixture.service(new CompletingAdapter(), 1_000).createAttempt({ taskId: task.id, workspaceId: task.workspaceId, resolvedAgentId: 'claude-code', resolvedModelId: 'model', baseSha: 'abc123' });
+      expect(run.baseSha).toBe('abc123');
+    } finally { await fixture.dispose(); }
+  });
+
   it('runs in a Git worktree, preserves the source tree, and persists structured evidence', async () => {
     const fixture = await setup();
     try {
@@ -64,6 +74,28 @@ describe('Planner Run vertical slice', () => {
       expect(cancelled.status).toBe('cancelled'); expect(adapter.cancelled).toBe(1);
     } finally { await fixture.dispose(); }
   });
+
+  it('cancels during preparation without launching Claude', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new CompletingAdapter(); const delayedWorktrees = new DelayedWorktreeService(fixture.worktreeService); const service = fixture.service(adapter, 5_000, delayedWorktrees);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Never launch.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]); await delayedWorktrees.waitForStart(); await service.requestCancellation(run.id); delayedWorktrees.release();
+      const cancelled = await waitFor(() => service.find(run.id).then((value) => value?.status === 'cancelled' ? value : undefined));
+      expect(adapter.starts).toBe(0); expect(cancelled.worktreePath).toBeTruthy(); expect(cancelled.finalGitState).toBeTruthy();
+    } finally { await fixture.dispose(); }
+  });
+
+  it('cancels a handle that arrives after cancellation during startRun handoff', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new DeferredStartAdapter(); const service = fixture.service(adapter, 5_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Cancel handoff.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]); await adapter.waitForStart(); await service.requestCancellation(run.id); adapter.releaseHandle();
+      const cancelled = await waitFor(() => service.find(run.id).then((value) => value?.status === 'cancelled' ? value : undefined));
+      expect(adapter.cancelled).toBe(1); expect(cancelled.status).toBe('cancelled');
+    } finally { await fixture.dispose(); }
+  });
 });
 
 const setup = async () => {
@@ -72,12 +104,13 @@ const setup = async () => {
   await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']);
   await writeFile(join(repository, 'marker.txt'), 'base\n'); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']);
   const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repository', true);
-  return { repository, workspace, tasks, service: (adapter: AgentAdapter, timeoutMs: number) => new RunService(runs, tasks, workspaces, new GitWorktreeService(worktrees), new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs }), dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
+  const worktreeService = new GitWorktreeService(worktrees);
+  return { repository, workspace, tasks, worktreeService, service: (adapter: AgentAdapter, timeoutMs: number, selectedWorktrees: WorktreeService = worktreeService) => new RunService(runs, tasks, workspaces, selectedWorktrees, new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs }), dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
 };
 
 class CompletingAdapter implements AgentAdapter {
-  public readonly id = 'claude-code'; public capabilities = (): AgentCapabilities => capabilities; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
-  public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { const event = { sequence: 0, timestamp: new Date().toISOString(), raw: '{"type":"system"}', parsed: { type: 'system' }, type: 'system', externalSessionId: 'session-test', terminal: false, parseError: null }; spec.onProtocolEvent?.(event); await writeFile(join(spec.workingDirectory, 'marker.txt'), 'changed by planner\n'); return { handleId: randomUUID(), externalSessionId: 'session-test', events: [event], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'session-test', events: [event], terminalEvent: { ...event, terminal: true }, stderr: '' }) }; }
+  public readonly id = 'claude-code'; public starts = 0; public capabilities = (): AgentCapabilities => capabilities; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
+  public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; const event = { sequence: 0, timestamp: new Date().toISOString(), raw: '{"type":"system"}', parsed: { type: 'system' }, type: 'system', externalSessionId: 'session-test', terminal: false, parseError: null }; spec.onProtocolEvent?.(event); await writeFile(join(spec.workingDirectory, 'marker.txt'), 'changed by planner\n'); return { handleId: randomUUID(), externalSessionId: 'session-test', events: [event], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'session-test', events: [event], terminalEvent: { ...event, terminal: true }, stderr: '' }) }; }
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('not implemented')); } public cancel(): Promise<void> { return Promise.resolve(); }
 }
 class TimeoutThenCompleteAdapter extends CompletingAdapter {
@@ -85,4 +118,20 @@ class TimeoutThenCompleteAdapter extends CompletingAdapter {
   public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.launches += 1; if (this.launches > 1) return super.startRun(spec); const handleId = randomUUID(); let resolveCompletion!: (result: AgentExecutionResult) => void; const completion = new Promise<AgentExecutionResult>((resolve) => { resolveCompletion = resolve; }); this.resolve = resolveCompletion; return { handleId, externalSessionId: null, events: [], completion }; }
   public override cancel(): Promise<void> { this.cancelled += 1; this.resolve?.({ handleId: 'timeout', succeeded: false, failureReason: 'cancelled', exitCode: null, signal: 'SIGTERM', externalSessionId: null, events: [], terminalEvent: null, stderr: '' }); return Promise.resolve(); }
 }
+class DeferredStartAdapter extends CompletingAdapter {
+  public cancelled = 0; private resolveStart?: (handle: AgentExecutionHandle) => void; private resolveCompletion?: (result: AgentExecutionResult) => void; private readonly started = deferred<void>();
+  public override startRun(): Promise<AgentExecutionHandle> { this.starts += 1; this.started.resolve(); return new Promise((resolve) => { this.resolveStart = resolve; }); }
+  public waitForStart(): Promise<void> { return this.started.promise; }
+  public releaseHandle(): void { let resolveCompletion!: (result: AgentExecutionResult) => void; const completion = new Promise<AgentExecutionResult>((resolve) => { resolveCompletion = resolve; }); this.resolveCompletion = resolveCompletion; this.resolveStart?.({ handleId: 'late-handle', externalSessionId: null, events: [], completion }); }
+  public override cancel(): Promise<void> { this.cancelled += 1; this.resolveCompletion?.({ handleId: 'late-handle', succeeded: false, failureReason: 'cancelled', exitCode: null, signal: 'SIGTERM', externalSessionId: null, events: [], terminalEvent: null, stderr: '' }); return Promise.resolve(); }
+}
+class DelayedWorktreeService implements WorktreeService {
+  private readonly started = deferred<void>(); private readonly gate = deferred<void>();
+  public constructor(private readonly inner: WorktreeService) {}
+  public async createForRun(spec: WorktreeSpec): Promise<WorktreeHandle> { this.started.resolve(); await this.gate.promise; return this.inner.createForRun(spec); }
+  public inspect(path: string): Promise<WorktreeHandle | undefined> { return this.inner.inspect(path); }
+  public removeAfterEvidencePersisted(path: string): Promise<void> { return this.inner.removeAfterEvidencePersisted(path); }
+  public waitForStart(): Promise<void> { return this.started.promise; } public release(): void { this.gate.resolve(); }
+}
+const deferred = <T>(): { promise: Promise<T>; resolve: (value: T) => void } => { let resolve!: (value: T) => void; return { promise: new Promise<T>((next) => { resolve = next; }), resolve }; };
 const waitFor = async <T>(get: () => T | Promise<T>, timeoutMs = 1_000): Promise<NonNullable<T>> => { const until = Date.now() + timeoutMs; for (;;) { const value = await get(); if (value) return value; if (Date.now() >= until) throw new Error('Condition timed out.'); await new Promise((resolve) => setTimeout(resolve, 10)); } };
