@@ -29,19 +29,28 @@ Read the authority documents in this order:
 17. `authorities/16_FCC_VALIDATION_PROTOCOL.md`
 
 Then use:
+
 - `implementation/NEXT_STEPS.md`
 - `implementation/FCC_CLI_VALIDATION_CHECKLIST.md`
 
 ## Primary visual authorities
 
 Current:
-- `design/Planner_Mockup_CURRENT.png`
-- `design/Worker_Conversation_Mockup_CURRENT.png`
 
-Legacy composition reference only:
-- `design/Workspace_Mockup_LEGACY_COMPOSITION_REFERENCE.png`
+- `design/mockups/planner.png`
+- `design/mockups/worker-conversation.png`
 
-The legacy mockup may still inform proportions, chrome, project tabs and the right explorer, but its older left-navigation labels are superseded by the V2 information architecture.
+Production UI assets are stored under:
+
+- `design/assets/buttons/`
+- `design/assets/icons/`
+- `design/assets/images/`
+- `design/assets/logos/`
+- `design/assets/misc/`
+
+The current mockups define the intended composition, density, chrome, navigation and general visual identity of NightShift V2.
+
+The exported production assets should be reused by the implementation where appropriate rather than replaced with generic substitutes.
 
 ## Core sentence
 
@@ -52,6 +61,7 @@ The legacy mockup may still inform proportions, chrome, project tabs and the rig
 NightShift does **not** implement its own LLM coding brain.
 
 NightShift owns:
+
 - workspaces;
 - UI;
 - task queue;
@@ -65,6 +75,7 @@ NightShift owns:
 - persistence.
 
 The selected external coding agent owns:
+
 - coding reasoning;
 - tool use;
 - edits;

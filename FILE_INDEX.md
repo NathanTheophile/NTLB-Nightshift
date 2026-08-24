@@ -1,8 +1,16 @@
 # File Index
 
+## Product authority
+
 - `DECISIONS.json`
 - `START_HERE.md`
+
+## Archived historical context
+
 - `archive/qwen-baseline/README.md`
+
+## Authority documents
+
 - `authorities/00_MASTER_AUTHORITY.md`
 - `authorities/01_PRODUCT_VISION_AND_SCOPE.md`
 - `authorities/02_TERMINOLOGY_AND_DOMAIN_MODEL.md`
@@ -20,9 +28,25 @@
 - `authorities/14_MVP_AND_IMPLEMENTATION_SEQUENCE.md`
 - `authorities/15_DECISION_REGISTER_AND_OPEN_QUESTIONS.md`
 - `authorities/16_FCC_VALIDATION_PROTOCOL.md`
-- `design/Planner_Mockup_CURRENT.png`
-- `design/Worker_Conversation_Mockup_CURRENT.png`
-- `design/Workspace_Mockup_LEGACY_COMPOSITION_REFERENCE.png`
+
+## Current visual references
+
+- `design/mockups/planner.png`
+- `design/mockups/worker-conversation.png`
+
+## Production UI assets
+
+- `design/assets/buttons/`
+- `design/assets/icons/`
+- `design/assets/images/`
+- `design/assets/logos/`
+- `design/assets/misc/`
+
+## Implementation references
+
 - `implementation/FCC_CLI_VALIDATION_CHECKLIST.md`
 - `implementation/NEXT_STEPS.md`
+
+## External/runtime references
+
 - `references/FCC_CURRENT_FACTS_2026-08-24.md`
