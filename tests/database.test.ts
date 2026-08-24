@@ -1,0 +1,58 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { DatabaseService } from '../src/main/persistence/DatabaseService';
+import { PlannerTaskRepository } from '../src/main/persistence/repositories/PlannerTaskRepository';
+import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe('DatabaseService', () => {
+  it('applies every ordered migration and remains idempotent', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nightshift-db-'));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, 'nightshift.sqlite');
+
+    const firstOpen = new DatabaseService(databasePath);
+    expect(firstOpen.schemaVersion()).toBe(2);
+    firstOpen.close();
+
+    const secondOpen = new DatabaseService(databasePath);
+    expect(secondOpen.schemaVersion()).toBe(2);
+    expect(
+      secondOpen
+        .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .map(({ name }) => name),
+    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models']));
+    secondOpen.close();
+  });
+
+  it('persists a workspace and a real queued Planner task', () => {
+    const database = new DatabaseService(':memory:');
+    const workspaces = new WorkspaceRepository(database);
+    const tasks = new PlannerTaskRepository(database);
+
+    const workspace = workspaces.addOrTouch('C:\\projects\\nightshift-test', 'nightshift-test', true);
+    const task = tasks.create({
+      workspaceId: workspace.id,
+      prompt: 'Document the typed IPC boundary.',
+      requestedAgentId: null,
+      requestedModelId: null,
+      priority: 1,
+    });
+
+    expect(task.status).toBe('queued');
+    expect(tasks.listVisible(workspace.id)).toEqual([task]);
+    expect(workspaces.list()).toEqual([workspace]);
+    database.close();
+  });
+});

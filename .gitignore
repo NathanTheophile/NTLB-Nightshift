@@ -1,0 +1,28 @@
+node_modules/
+out/
+release/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# NightShift local runtime state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+logs/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
