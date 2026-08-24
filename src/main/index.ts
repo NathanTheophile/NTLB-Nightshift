@@ -72,7 +72,7 @@ void app.whenReady().then(() => {
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
-    workspaces: new WorkspaceService(workspaces),
+    workspaces: new WorkspaceService(workspaces, settings),
     planner: new PlannerService(tasks, workspaces),
     launcher: new LauncherService(settings, workspaces),
   });

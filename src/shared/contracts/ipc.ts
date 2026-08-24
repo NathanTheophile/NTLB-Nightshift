@@ -33,6 +33,11 @@ export interface LauncherConfiguration {
   ideConfigured: boolean;
 }
 
+export interface WorkspaceTabState {
+  workspaceIds: string[];
+  activeWorkspaceId: string | null;
+}
+
 export type WorkspaceTool = 'terminal' | 'explorer' | 'ide';
 
 export interface LaunchWorkspaceToolRequest {
@@ -48,12 +53,14 @@ export interface LaunchResult {
 export interface BootstrapState {
   appVersion: string;
   workspaces: Workspace[];
+  activeWorkspaceId: string | null;
   launcherConfiguration: LauncherConfiguration;
 }
 
 export const IPC_CHANNELS = {
   appBootstrap: 'app:bootstrap',
   workspaceSelect: 'workspace:select',
+  workspaceSaveTabState: 'workspace:save-tab-state',
   workspaceListEntries: 'workspace:list-entries',
   plannerListTasks: 'planner:list-tasks',
   plannerCreateTask: 'planner:create-task',
@@ -68,6 +75,7 @@ export const IPC_CHANNELS = {
 export interface IpcContract {
   [IPC_CHANNELS.appBootstrap]: { request: undefined; response: BootstrapState };
   [IPC_CHANNELS.workspaceSelect]: { request: undefined; response: Workspace | null };
+  [IPC_CHANNELS.workspaceSaveTabState]: { request: WorkspaceTabState; response: undefined };
   [IPC_CHANNELS.workspaceListEntries]: {
     request: ListWorkspaceEntriesRequest;
     response: WorkspaceDirectoryPage;
@@ -94,6 +102,7 @@ export interface NightShiftApi {
   };
   workspace: {
     select: () => Promise<Workspace | null>;
+    saveTabState: (state: WorkspaceTabState) => Promise<void>;
     listEntries: (request: ListWorkspaceEntriesRequest) => Promise<WorkspaceDirectoryPage>;
   };
   planner: {

@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { LauncherConfiguration, WorkspaceTool } from '@shared/contracts/ipc';
 import type { Workspace } from '@shared/domain/entities';
+import { closeWorkspaceTab, reorderWorkspaceTabs } from '@shared/domain/workspaceTabs';
 
 import { assets } from './assets';
 import { EmptyState } from './components/EmptyState';
 import { PlannerView } from './components/PlannerView';
 import { PlaceholderView } from './components/PlaceholderView';
 import { QuickActions } from './components/QuickActions';
+import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar, type AppSection } from './components/Sidebar';
 import { WindowChrome } from './components/WindowChrome';
 import { WorkersView } from './components/WorkersView';
@@ -30,6 +32,8 @@ export const App = () => {
     ideDisplayName: null,
   });
   const [loading, setLoading] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [configuringIde, setConfiguringIde] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const reportError = useCallback((message: string) => setErrorMessage(message), []);
@@ -39,7 +43,7 @@ export const App = () => {
       .bootstrap()
       .then((bootstrap) => {
         setWorkspaces(bootstrap.workspaces);
-        setActiveWorkspaceId(bootstrap.workspaces[0]?.id ?? null);
+        setActiveWorkspaceId(bootstrap.activeWorkspaceId);
         setLauncherConfiguration(bootstrap.launcherConfiguration);
       })
       .catch((error: unknown) => reportError(messageFrom(error)))
@@ -55,8 +59,10 @@ export const App = () => {
     try {
       const workspace = await window.nightShift.workspace.select();
       if (!workspace) return;
-      setWorkspaces((current) => [workspace, ...current.filter(({ id }) => id !== workspace.id)]);
-      setActiveWorkspaceId(workspace.id);
+      const nextWorkspaces = workspaces.some(({ id }) => id === workspace.id)
+        ? workspaces
+        : [...workspaces, workspace];
+      applyTabState(nextWorkspaces, workspace.id);
     } catch (error) {
       reportError(messageFrom(error));
     }
@@ -70,34 +76,70 @@ export const App = () => {
         tool,
       });
       if (result.status === 'configuration_required' && tool === 'ide') {
-        const configuration = await window.nightShift.launcher.configureIde();
-        setLauncherConfiguration(configuration);
-        if (configuration.ideConfigured) {
-          await window.nightShift.launcher.openWorkspaceTool({ workspaceId: activeWorkspace.id, tool: 'ide' });
-        }
+        setSettingsOpen(true);
       }
     } catch (error) {
       reportError(messageFrom(error));
     }
   };
 
-  const activeTitle = activeWorkspace
-    ? `${sectionTitles[activeSection]} · ${activeWorkspace.displayName}`
-    : sectionTitles[activeSection];
+  const applyTabState = (nextWorkspaces: Workspace[], nextActiveWorkspaceId: string | null): void => {
+    setWorkspaces(nextWorkspaces);
+    setActiveWorkspaceId(nextActiveWorkspaceId);
+    void window.nightShift.workspace.saveTabState({
+      workspaceIds: nextWorkspaces.map(({ id }) => id),
+      activeWorkspaceId: nextActiveWorkspaceId,
+    }).catch((error: unknown) => reportError(messageFrom(error)));
+  };
+
+  const activateWorkspace = (workspaceId: string): void => applyTabState(workspaces, workspaceId);
+
+  const closeWorkspace = (workspaceId: string): void => {
+    const next = closeWorkspaceTab(workspaces, activeWorkspaceId, workspaceId);
+    applyTabState(next.workspaces, next.activeWorkspaceId);
+  };
+
+  const moveWorkspace = (draggedWorkspaceId: string, targetWorkspaceId: string): void => {
+    applyTabState(
+      reorderWorkspaceTabs(workspaces, draggedWorkspaceId, targetWorkspaceId),
+      activeWorkspaceId,
+    );
+  };
+
+  const configureIde = async (): Promise<void> => {
+    setConfiguringIde(true);
+    try {
+      setLauncherConfiguration(await window.nightShift.launcher.configureIde());
+    } catch (error) {
+      reportError(messageFrom(error));
+    } finally {
+      setConfiguringIde(false);
+    }
+  };
 
   return (
     <div className="app-shell" style={{ '--nightshift-background': `url(${assets.background})` } as React.CSSProperties}>
       <WindowChrome
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
-        onActivateWorkspace={setActiveWorkspaceId}
+        onActivateWorkspace={activateWorkspace}
+        onCloseWorkspace={closeWorkspace}
+        onMoveWorkspace={moveWorkspace}
         onOpenWorkspace={() => void openWorkspace()}
+        onOpenSettings={() => setSettingsOpen(true)}
         onHome={() => setActiveSection('planner')}
       />
 
       <div className="tool-strip">
-        <QuickActions disabled={!activeWorkspace} onLaunch={(tool) => void launchWorkspaceTool(tool)} />
-        <h1>{activeTitle}</h1>
+        <QuickActions
+          disabled={!activeWorkspace}
+          ideDisplayName={launcherConfiguration.ideDisplayName}
+          onLaunch={(tool) => void launchWorkspaceTool(tool)}
+        />
+        <h1>
+          <span className="context-section">{sectionTitles[activeSection]}</span>
+          {activeWorkspace && <span className="context-workspace"> · {activeWorkspace.displayName}</span>}
+        </h1>
         <div className="active-project-meta">
           {activeWorkspace && <span>{activeWorkspace.isGit ? 'Dépôt Git' : 'Projet non-Git'}</span>}
           {launcherConfiguration.ideConfigured && <span>IDE · {launcherConfiguration.ideDisplayName}</span>}
@@ -140,6 +182,14 @@ export const App = () => {
           </div>
           <button type="button" onClick={() => setErrorMessage(null)}>Fermer</button>
         </div>
+      )}
+      {settingsOpen && (
+        <SettingsDialog
+          configuration={launcherConfiguration}
+          configuring={configuringIde}
+          onClose={() => setSettingsOpen(false)}
+          onConfigureIde={() => void configureIde()}
+        />
       )}
     </div>
   );

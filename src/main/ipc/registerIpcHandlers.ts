@@ -8,6 +8,7 @@ import {
   type IpcResult,
   type ListWorkspaceEntriesRequest,
   type LaunchWorkspaceToolRequest,
+  type WorkspaceTabState,
 } from '@shared/contracts/ipc';
 
 import type { LauncherService } from '../services/LauncherService';
@@ -27,15 +28,25 @@ type Handler<Channel extends IpcChannel> = (
 ) => Promise<IpcContract[Channel]['response']> | IpcContract[Channel]['response'];
 
 export const registerIpcHandlers = (services: IpcServices): void => {
-  handle(IPC_CHANNELS.appBootstrap, () => ({
-    appVersion: services.appVersion,
-    workspaces: services.workspaces.list(),
-    launcherConfiguration: services.launcher.getConfiguration(),
-  }));
+  handle(IPC_CHANNELS.appBootstrap, () => {
+    const tabs = services.workspaces.getOpenTabs();
+    return {
+      appVersion: services.appVersion,
+      workspaces: tabs.workspaces,
+      activeWorkspaceId: tabs.activeWorkspaceId,
+      launcherConfiguration: services.launcher.getConfiguration(),
+    };
+  });
 
   handle(IPC_CHANNELS.workspaceSelect, async (_, event) =>
     services.workspaces.select(requireWindow(event)),
   );
+
+  handle(IPC_CHANNELS.workspaceSaveTabState, (request) => {
+    assertWorkspaceTabState(request);
+    services.workspaces.saveTabState(request);
+    return undefined;
+  });
 
   handle(IPC_CHANNELS.workspaceListEntries, async (request) => {
     assertListEntriesRequest(request);
@@ -143,6 +154,19 @@ function assertLaunchRequest(value: unknown): asserts value is LaunchWorkspaceTo
   assertNonEmptyString(value.workspaceId, 'workspaceId');
   if (value.tool !== 'terminal' && value.tool !== 'explorer' && value.tool !== 'ide') {
     throw new Error('Unsupported workspace tool.');
+  }
+}
+
+function assertWorkspaceTabState(value: unknown): asserts value is WorkspaceTabState {
+  assertRecord(value);
+  if (!Array.isArray(value.workspaceIds) || !value.workspaceIds.every((id) => typeof id === 'string' && id.trim())) {
+    throw new Error('workspaceIds must contain only non-empty strings.');
+  }
+  if (value.workspaceIds.length > 100) {
+    throw new Error('No more than 100 workspace tabs can be open.');
+  }
+  if (value.activeWorkspaceId !== null && (typeof value.activeWorkspaceId !== 'string' || !value.activeWorkspaceId.trim())) {
+    throw new Error('activeWorkspaceId must be null or a non-empty string.');
   }
 }
 

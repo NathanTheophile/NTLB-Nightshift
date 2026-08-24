@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { DatabaseService } from '../src/main/persistence/DatabaseService';
 import { PlannerTaskRepository } from '../src/main/persistence/repositories/PlannerTaskRepository';
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
+import { SettingsRepository } from '../src/main/persistence/repositories/SettingsRepository';
+import { WorkspaceService } from '../src/main/services/WorkspaceService';
 
 const temporaryDirectories: string[] = [];
 
@@ -53,6 +55,23 @@ describe('DatabaseService', () => {
     expect(task.status).toBe('queued');
     expect(tasks.listVisible(workspace.id)).toEqual([task]);
     expect(workspaces.list()).toEqual([workspace]);
+    database.close();
+  });
+
+  it('persists ordered open tabs without deleting remembered workspaces', () => {
+    const database = new DatabaseService(':memory:');
+    const workspaces = new WorkspaceRepository(database);
+    const settings = new SettingsRepository(database);
+    const service = new WorkspaceService(workspaces, settings);
+    const alpha = workspaces.addOrTouch('C:\\projects\\alpha', 'alpha', true);
+    const beta = workspaces.addOrTouch('C:\\projects\\beta', 'beta', true);
+
+    service.saveTabState({ workspaceIds: [alpha.id], activeWorkspaceId: alpha.id });
+    expect(service.getOpenTabs()).toEqual({ workspaces: [alpha], activeWorkspaceId: alpha.id });
+    expect(workspaces.list()).toHaveLength(2);
+
+    service.saveTabState({ workspaceIds: [beta.id, alpha.id], activeWorkspaceId: beta.id });
+    expect(service.getOpenTabs()).toEqual({ workspaces: [beta, alpha], activeWorkspaceId: beta.id });
     database.close();
   });
 });

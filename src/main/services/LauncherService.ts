@@ -12,6 +12,7 @@ import type {
 
 import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
+import { createTerminalLaunchSpecs, type DetachedLaunchSpec } from './launcherSpecs';
 
 interface IdeSetting {
   executablePath: string;
@@ -74,7 +75,7 @@ export class LauncherService {
     }
 
     if (tool === 'terminal') {
-      await launchDetached('powershell.exe', ['-NoExit'], workspace.rootPath);
+      await launchFirstAvailable(createTerminalLaunchSpecs(workspace.rootPath));
       return { status: 'launched', message: 'Terminal opened at the workspace root.' };
     }
 
@@ -104,6 +105,19 @@ const launchDetached = async (executable: string, argumentsList: readonly string
     });
     child.once('error', rejectLaunch);
   });
+
+const launchFirstAvailable = async (specs: readonly DetachedLaunchSpec[]): Promise<void> => {
+  let lastError: unknown;
+  for (const spec of specs) {
+    try {
+      await launchDetached(spec.executable, spec.argumentsList, spec.cwd);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('No supported Windows terminal could be launched.');
+};
 
 const assertWindowsExecutable = async (executablePath: string): Promise<void> => {
   if (extname(executablePath).toLowerCase() !== '.exe') {

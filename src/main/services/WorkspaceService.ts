@@ -7,16 +7,54 @@ import type {
   ListWorkspaceEntriesRequest,
   WorkspaceDirectoryPage,
   WorkspaceEntry,
+  WorkspaceTabState,
 } from '@shared/contracts/ipc';
 import type { Workspace } from '@shared/domain/entities';
 
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
+import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
+
+const workspaceTabStateKey = 'workspace.tabs';
 
 export class WorkspaceService {
-  public constructor(private readonly workspaces: WorkspaceRepository) {}
+  public constructor(
+    private readonly workspaces: WorkspaceRepository,
+    private readonly settings: SettingsRepository,
+  ) {}
 
-  public list(): Workspace[] {
-    return this.workspaces.list();
+  public getOpenTabs(): { workspaces: Workspace[]; activeWorkspaceId: string | null } {
+    const knownWorkspaces = this.workspaces.list();
+    const savedState = this.settings.get<WorkspaceTabState>(workspaceTabStateKey);
+    if (!savedState) {
+      return {
+        workspaces: knownWorkspaces,
+        activeWorkspaceId: knownWorkspaces[0]?.id ?? null,
+      };
+    }
+
+    const workspacesById = new Map(knownWorkspaces.map((workspace) => [workspace.id, workspace]));
+    const openWorkspaces = savedState.workspaceIds.flatMap((workspaceId) => {
+      const workspace = workspacesById.get(workspaceId);
+      return workspace ? [workspace] : [];
+    });
+    const activeWorkspaceId = openWorkspaces.some(({ id }) => id === savedState.activeWorkspaceId)
+      ? savedState.activeWorkspaceId
+      : openWorkspaces[0]?.id ?? null;
+    return { workspaces: openWorkspaces, activeWorkspaceId };
+  }
+
+  public saveTabState(state: WorkspaceTabState): void {
+    const uniqueIds = new Set(state.workspaceIds);
+    if (uniqueIds.size !== state.workspaceIds.length) {
+      throw new Error('Open workspace tabs must be unique.');
+    }
+    for (const workspaceId of state.workspaceIds) {
+      this.findRequired(workspaceId);
+    }
+    if (state.activeWorkspaceId !== null && !uniqueIds.has(state.activeWorkspaceId)) {
+      throw new Error('The active workspace must be one of the open tabs.');
+    }
+    this.settings.set(workspaceTabStateKey, state);
   }
 
   public findRequired(workspaceId: string): Workspace {

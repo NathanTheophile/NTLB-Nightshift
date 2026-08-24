@@ -25,6 +25,7 @@ const api: NightShiftApi = {
   },
   workspace: {
     select: () => invoke(IPC_CHANNELS.workspaceSelect, undefined),
+    saveTabState: (state) => invoke(IPC_CHANNELS.workspaceSaveTabState, state),
     listEntries: (request) => invoke(IPC_CHANNELS.workspaceListEntries, request),
   },
   planner: {
