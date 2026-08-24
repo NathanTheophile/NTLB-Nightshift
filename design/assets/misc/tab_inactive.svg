@@ -12,7 +12,7 @@
       }
 
       .cls-3 {
-        fill: rgba(139, 96, 186, .3);
+        fill: rgba(102, 45, 145, .3);
       }
     </style>
     <filter id="drop-shadow-1" x="-9" y="-12.6" width="274" height="48" filterUnits="userSpaceOnUse">
