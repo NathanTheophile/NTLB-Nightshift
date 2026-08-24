@@ -20,6 +20,31 @@ export interface WorkerStartSpec {
 export interface AgentExecutionHandle {
   handleId: string;
   externalSessionId: string | null;
+  events: readonly AgentProtocolEvent[];
+  completion: Promise<AgentExecutionResult>;
+}
+
+export interface AgentProtocolEvent {
+  sequence: number;
+  timestamp: string;
+  raw: string;
+  parsed: unknown;
+  type: string | null;
+  externalSessionId: string | null;
+  terminal: boolean;
+  parseError: string | null;
+}
+
+export interface AgentExecutionResult {
+  handleId: string;
+  succeeded: boolean;
+  failureReason: string | null;
+  exitCode: number | null;
+  signal: string | null;
+  externalSessionId: string | null;
+  events: readonly AgentProtocolEvent[];
+  terminalEvent: AgentProtocolEvent | null;
+  stderr: string;
 }
 
 export interface AgentAdapter {

@@ -10,10 +10,23 @@ import { SettingsRepository } from './persistence/repositories/SettingsRepositor
 import { WorkspaceRepository } from './persistence/repositories/WorkspaceRepository';
 import { LauncherService } from './services/LauncherService';
 import { PlannerService } from './services/PlannerService';
+import { WindowsProcessSupervisor } from './services/WindowsProcessSupervisor';
 import { WorkspaceService } from './services/WorkspaceService';
+import { ClaudeCodeAdapter } from './services/agents/ClaudeCodeAdapter';
+import type { FccHealth } from './services/contracts/FccGateway';
+import { FccRuntimeManager } from './services/runtime/FccRuntimeManager';
+import { LocalFccGateway } from './services/runtime/LocalFccGateway';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
 let database: DatabaseService | undefined;
+let runtime: RuntimeContext | undefined;
+let shutdownStarted = false;
+
+interface RuntimeContext {
+  fccGateway: LocalFccGateway;
+  claudeCode: ClaudeCodeAdapter;
+  availability: Promise<FccHealth>;
+}
 
 const createWindow = (): BrowserWindow => {
   const window = new BrowserWindow({
@@ -69,6 +82,27 @@ void app.whenReady().then(() => {
   const workspaces = new WorkspaceRepository(database);
   const tasks = new PlannerTaskRepository(database);
   const settings = new SettingsRepository(database);
+  const processSupervisor = new WindowsProcessSupervisor();
+  const fccRuntime = new FccRuntimeManager({ supervisor: processSupervisor });
+  const fccGateway = new LocalFccGateway(fccRuntime);
+  const availability = fccGateway.ensureAvailable();
+  runtime = {
+    fccGateway,
+    claudeCode: new ClaudeCodeAdapter(processSupervisor, fccGateway),
+    availability,
+  };
+
+  void availability.then((health) => {
+    if (!health.available) {
+      console.error(`[FCC] Runtime unavailable: ${health.failureReason ?? health.detail}`);
+      return;
+    }
+    const ownership = health.ownedByNightShift ? 'NightShift-owned' : 'external';
+    console.info(`[FCC] ${health.detail} (${ownership}, ${health.endpoint ?? 'no endpoint'}, ${health.version ?? 'unknown version'})`);
+  }).catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`[FCC] Runtime startup failed: ${detail}`);
+  });
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
@@ -91,7 +125,28 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
-  database?.close();
-  database = undefined;
+app.on('before-quit', (event) => {
+  if (shutdownStarted) {
+    return;
+  }
+
+  event.preventDefault();
+  shutdownStarted = true;
+  void shutdown().finally(() => app.quit());
 });
+
+const shutdown = async (): Promise<void> => {
+  try {
+    if (runtime) {
+      await runtime.availability.catch(() => undefined);
+      await runtime.fccGateway.stopOwnedProcess();
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`[FCC] Failed to stop the NightShift-owned runtime: ${detail}`);
+  } finally {
+    runtime = undefined;
+    database?.close();
+    database = undefined;
+  }
+};
