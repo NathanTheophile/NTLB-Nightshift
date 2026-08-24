@@ -1,0 +1,143 @@
+{
+  "name": "NightShift-V2-Authority-Pack",
+  "authorityDate": "2026-08-24",
+  "status": "ACTIVE",
+  "authorityDocs": 17,
+  "files": [
+    {
+      "path": "DECISIONS.json",
+      "bytes": 1084,
+      "sha256": "b88d9118f96a78f4d3cbcae918be51db230a3bbcb0ba081cf03e3ccf00a313ba"
+    },
+    {
+      "path": "FILE_INDEX.md",
+      "bytes": 1173,
+      "sha256": "f23266ec9674bd8e5b2c687f95689c493ae55f9efdd760df70e5ec6bfbd1870d"
+    },
+    {
+      "path": "START_HERE.md",
+      "bytes": 2505,
+      "sha256": "52c85b6779b1aa5e130d938fa44aba29c3816c38eb98765ca3e5bfe7e1d4e56c"
+    },
+    {
+      "path": "archive/qwen-baseline/README.md",
+      "bytes": 645,
+      "sha256": "5ff62e22a94405285f4b0c0c7a55a6e38e38ebad99d83ccbabf64bf23de4e824"
+    },
+    {
+      "path": "authorities/00_MASTER_AUTHORITY.md",
+      "bytes": 4865,
+      "sha256": "71f905ba596b36f8f3dcf1394acafb985497a89fda99b6472a466aa475c6a943"
+    },
+    {
+      "path": "authorities/01_PRODUCT_VISION_AND_SCOPE.md",
+      "bytes": 4136,
+      "sha256": "89dca8787eeca11becbbd994c68fc3c0175f0f92c0387e018d6404ca94dd84a1"
+    },
+    {
+      "path": "authorities/02_TERMINOLOGY_AND_DOMAIN_MODEL.md",
+      "bytes": 4301,
+      "sha256": "bbd8b80cf6dae278c0309db612aa3e345966fcaa32fa20026afe63f79c17ebbe"
+    },
+    {
+      "path": "authorities/03_INFORMATION_ARCHITECTURE_AND_UX.md",
+      "bytes": 5283,
+      "sha256": "ffa2debad95b49500acb2a9c7d365afaae3f5641566ed38957a1811ad530855f"
+    },
+    {
+      "path": "authorities/04_DESIGN_AUTHORITY.md",
+      "bytes": 2659,
+      "sha256": "12ba41067ecdc8faecd963655b7dc1a4267981f08c9a6ec6224945941a75cb3b"
+    },
+    {
+      "path": "authorities/05_RUNTIME_ARCHITECTURE.md",
+      "bytes": 4083,
+      "sha256": "39c012d97ebd0435fe6ae5702e23eab06a1e0055b7738a652ee636548f2e95c7"
+    },
+    {
+      "path": "authorities/06_FCC_GATEWAY_AND_AGENT_CATALOG.md",
+      "bytes": 3950,
+      "sha256": "184f47ab6c5a8fb05869758f294974cd83fde7eb9ce190a4c63d9f3849392f62"
+    },
+    {
+      "path": "authorities/07_PLANNER_AND_RUNS.md",
+      "bytes": 4093,
+      "sha256": "5fbc27702bb09f097ec597c7b4026ae568683f2eb00257dba9d97fec258c83ac"
+    },
+    {
+      "path": "authorities/08_WORKERS_INTERACTIVE_CODING_SESSIONS.md",
+      "bytes": 3758,
+      "sha256": "995e3c3e49da02956c6e997b8fdd04c1c8e9e95b44d42a4f09a8edba8e578fb6"
+    },
+    {
+      "path": "authorities/09_CHATS_AND_GPT.md",
+      "bytes": 2473,
+      "sha256": "4903ee4d9e0c18015ffb043c907d731a47d7324d03bff0f9e0ca7160e72c7c11"
+    },
+    {
+      "path": "authorities/10_GIT_ISOLATION_AND_SAFETY.md",
+      "bytes": 2332,
+      "sha256": "1d9aeb4776c004dc3fcd2d8f671a475bb2893da28e2f036c577c0784c38a4290"
+    },
+    {
+      "path": "authorities/11_DATA_MODEL_AND_SQLITE.md",
+      "bytes": 3073,
+      "sha256": "9a1a8800b3e9b5a0630e782ed1bcba69180d8170ff536faa6b38f02b95b12bda"
+    },
+    {
+      "path": "authorities/12_BENCHMARKING_AND_TELEMETRY.md",
+      "bytes": 2358,
+      "sha256": "8151ed1fde363a0e2ff414cd7063bf89b21855f99464841ae0aa5cf8bf19fe29"
+    },
+    {
+      "path": "authorities/13_SECURITY_AND_PROCESS_MODEL.md",
+      "bytes": 2423,
+      "sha256": "fa6c8a3ba31078cff2eb967998bd5155e00dab052703a078b640b70359e6265f"
+    },
+    {
+      "path": "authorities/14_MVP_AND_IMPLEMENTATION_SEQUENCE.md",
+      "bytes": 3898,
+      "sha256": "6df1826606e473bbb56b78cf616823a36ff7b979e343dde8a4650d5fbe0ef009"
+    },
+    {
+      "path": "authorities/15_DECISION_REGISTER_AND_OPEN_QUESTIONS.md",
+      "bytes": 4578,
+      "sha256": "d671965324a5cf7bd89ba51b4f02afefd3b9a12537ca0ca30f7fd2721f39810a"
+    },
+    {
+      "path": "authorities/16_FCC_VALIDATION_PROTOCOL.md",
+      "bytes": 3466,
+      "sha256": "c3818dd75aded893722a2d8c7eeb7e0489d069676c4ccb040076d03373a14d52"
+    },
+    {
+      "path": "design/Planner_Mockup_CURRENT.png",
+      "bytes": 219101,
+      "sha256": "f38929ed0aae69a1770f4484d07cd3a0da79452ea797c71b59f9afb9b4098a3f"
+    },
+    {
+      "path": "design/Worker_Conversation_Mockup_CURRENT.png",
+      "bytes": 277682,
+      "sha256": "81cc6c79ea6f65585314773c5365a0c65695cdb3ba7535d31444d630f815d12e"
+    },
+    {
+      "path": "design/Workspace_Mockup_LEGACY_COMPOSITION_REFERENCE.png",
+      "bytes": 173260,
+      "sha256": "2eca03b1f12e921d1e8c9f15c56070d199fa2cb768f679a3cdaf0edc9992b3cf"
+    },
+    {
+      "path": "implementation/FCC_CLI_VALIDATION_CHECKLIST.md",
+      "bytes": 2362,
+      "sha256": "b25c180dfca96671c14fb961846c4a4940bbc0d74ccaf71c171cc849f235f93a"
+    },
+    {
+      "path": "implementation/NEXT_STEPS.md",
+      "bytes": 2037,
+      "sha256": "e06d08f9812c27a180fb094c15e04daa7aeac7863d8f22db8044e072c3512805"
+    },
+    {
+      "path": "references/FCC_CURRENT_FACTS_2026-08-24.md",
+      "bytes": 930,
+      "sha256": "8a888a2b5509bb787cb834be16d58dba2ba02c4f978aad7b3b3fbc35e2365352"
+    }
+  ]
+}

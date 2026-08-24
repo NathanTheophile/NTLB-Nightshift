@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Calque_2" data-name="Calque 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 256 29.4">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: rgba(139, 96, 186, .3);
+      }
+
+      .cls-2 {
+        fill: url(#Dégradé_sans_nom_1040);
+        fill-opacity: .3;
+      }
+    </style>
+    <linearGradient id="Dégradé_sans_nom_1040" data-name="Dégradé sans nom 1040" x1="89.93" y1="-47.44" x2="164.72" y2="82.1" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#49345b" stop-opacity="0"/>
+      <stop offset=".07" stop-color="#2e2039" stop-opacity=".18"/>
+      <stop offset=".5" stop-color="#000" stop-opacity=".5"/>
+      <stop offset=".95" stop-color="#070707" stop-opacity=".39"/>
+      <stop offset="1" stop-color="#0a0a0a" stop-opacity=".35"/>
+    </linearGradient>
+  </defs>
+  <g id="Calque_1-2" data-name="Calque 1">
+    <path class="cls-1" d="M10.4,0h234.6c6.07,0,11,4.93,11,11v18.4H0V10.4C0,4.66,4.66,0,10.4,0Z"/>
+    <path class="cls-2" d="M10.4,0h234.6c6.07,0,11,4.93,11,11v18.4H0V10.4C0,4.66,4.66,0,10.4,0Z"/>
+  </g>
+</svg>

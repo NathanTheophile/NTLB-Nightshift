@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Calque_2" data-name="Calque 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 58 50">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: none;
+        stroke: #999;
+        stroke-miterlimit: 10;
+        stroke-width: 2px;
+      }
+
+      .cls-2 {
+        filter: url(#drop-shadow-1);
+      }
+
+      .cls-3 {
+        fill: #8b60ba;
+      }
+
+      .cls-4 {
+        fill: #999;
+      }
+    </style>
+    <filter id="drop-shadow-1" x="0" y="0" width="58" height="50" filterUnits="userSpaceOnUse">
+      <feOffset dx="3" dy="0"/>
+      <feGaussianBlur result="blur" stdDeviation="3"/>
+      <feFlood flood-color="#000" flood-opacity=".35"/>
+      <feComposite in2="blur" operator="in"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+  </defs>
+  <g id="Calque_1-2" data-name="Calque 1">
+    <g class="cls-2">
+      <path class="cls-3" d="M6,9h35c2.76,0,5,2.24,5,5v22c0,2.76-2.24,5-5,5H6V9h0Z"/>
+    </g>
+    <path class="cls-4" d="M32,19v12h-12v-12h12ZM34,17h-16v16h16v-16h0Z"/>
+    <line class="cls-1" x1="22.67" y1="33" x2="22.67" y2="17"/>
+  </g>
+</svg>

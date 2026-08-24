@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Calque_2" data-name="Calque 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 256 29.4">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: rgba(139, 96, 186, .5);
+      }
+
+      .cls-2 {
+        fill: url(#Dégradé_sans_nom_826);
+        fill-opacity: .3;
+      }
+    </style>
+    <linearGradient id="Dégradé_sans_nom_826" data-name="Dégradé sans nom 826" x1="58.18" y1="87.58" x2="197.82" y2="-52.05" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#662d91"/>
+      <stop offset=".04" stop-color="#502471"/>
+      <stop offset=".09" stop-color="#3a1c51"/>
+      <stop offset=".15" stop-color="#281537"/>
+      <stop offset=".21" stop-color="#1b1023"/>
+      <stop offset=".28" stop-color="#110c14"/>
+      <stop offset=".36" stop-color="#0b0a0c"/>
+      <stop offset=".5" stop-color="#0a0a0a"/>
+      <stop offset=".64" stop-color="#0c0a0c"/>
+      <stop offset=".72" stop-color="#140c14"/>
+      <stop offset=".79" stop-color="#230f22"/>
+      <stop offset=".85" stop-color="#371336"/>
+      <stop offset=".91" stop-color="#51194f"/>
+      <stop offset=".96" stop-color="#711f6e"/>
+      <stop offset="1" stop-color="#93278f"/>
+    </linearGradient>
+  </defs>
+  <g id="Calque_1-2" data-name="Calque 1">
+    <path class="cls-1" d="M10.4,0h234.6c6.07,0,11,4.93,11,11v18.4H0V10.4C0,4.66,4.66,0,10.4,0Z"/>
+    <path class="cls-2" d="M10.4,0h234.6c6.07,0,11,4.93,11,11v18.4H0V10.4C0,4.66,4.66,0,10.4,0Z"/>
+  </g>
+</svg>

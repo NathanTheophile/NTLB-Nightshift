@@ -1,0 +1,40 @@
+{
+  "authorityDate": "2026-08-24",
+  "productPosition": "general_project_hub",
+  "primaryNav": [
+    "Planner",
+    "Runs",
+    "Workers",
+    "Chats",
+    "GPT"
+  ],
+  "workerAgentModelLocked": true,
+  "workerPermissions": "configurable",
+  "taskRun": "one_run_per_attempt",
+  "plannerTopLevelConcurrency": 1,
+  "priority": {
+    "highest": 1,
+    "tieBreak": "FIFO"
+  },
+  "autoMode": "configured_defaults_not_intelligent_routing",
+  "fcc": "mandatory_v1_gateway",
+  "agents": "detect_all_fcc_supported_installed",
+  "qwen": "archive_only",
+  "plannerRunIsolation": "mandatory_git_worktree_for_writes",
+  "workerIsolation": "configurable_direct_or_worktree",
+  "chats": "fcc_lightweight_model_read_only",
+  "gpt": "post_core_vertical_slice",
+  "development": "fcc_cli_validation_then_thin_shell_then_vertical_slice",
+  "firstAdapter": "chosen_by_cli_validation",
+  "telemetry": "always_on_for_runs",
+  "paidApis": "out_of_scope_v1",
+  "persistence": "sqlite",
+  "automationSurface": "Runs",
+  "stack": [
+    "Electron",
+    "React",
+    "TypeScript",
+    "Vite",
+    "SQLite"
+  ]
+}
