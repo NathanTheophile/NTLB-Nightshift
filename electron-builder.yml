@@ -1,0 +1,15 @@
+appId: com.nightshift.desktop
+productName: NightShift
+asar: true
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+win:
+  target:
+    - nsis
+  artifactName: NightShift-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
