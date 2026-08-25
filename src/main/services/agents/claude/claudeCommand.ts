@@ -36,7 +36,7 @@ export const buildClaudeRunArguments = (spec: RunStartSpec): readonly string[] =
     'acceptEdits',
     '--tools',
     plannerTools,
-    '--allowed-tools',
+    '--allowedTools',
     ...plannerBashPermissions,
     '--output-format',
     'stream-json',

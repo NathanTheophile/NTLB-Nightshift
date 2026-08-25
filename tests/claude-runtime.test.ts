@@ -35,7 +35,7 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
       'acceptEdits',
       '--tools',
       'Read,Edit,Write,Glob,Grep,Bash',
-      '--allowed-tools',
+      '--allowedTools',
       'Bash(npm run typecheck)',
       'Bash(npm run lint)',
       'Bash(npm test)',
@@ -58,7 +58,7 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
       'Create the requested marker file.',
     ]);
     expect(argumentsList).toEqual(expect.arrayContaining([
-      'Read,Edit,Write,Glob,Grep,Bash', '--allowed-tools', 'Bash(npm run typecheck)', 'Bash(npm run lint)', 'Bash(npm test *)', 'Bash(npm run build)', 'Bash(npx vitest *)', 'Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git rev-parse *)',
+      'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', 'Bash(npm run typecheck)', 'Bash(npm run lint)', 'Bash(npm test *)', 'Bash(npm run build)', 'Bash(npx vitest *)', 'Bash(git status *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git rev-parse *)',
     ]));
     expect(argumentsList).not.toContain('Bash');
     expect(argumentsList.join(' ')).not.toContain('dangerously-skip-permissions');
@@ -116,7 +116,7 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
         workingDirectory,
       });
       expect(supervisor.startedSpec?.arguments).toContain('provider/explicit-model');
-      expect(supervisor.startedSpec?.arguments).toEqual(expect.arrayContaining(['Read,Edit,Write,Glob,Grep,Bash', '--allowed-tools', 'Bash(npm run typecheck)', 'Bash(git diff *)']));
+      expect(supervisor.startedSpec?.arguments).toEqual(expect.arrayContaining(['Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', 'Bash(npm run typecheck)', 'Bash(git diff *)']));
       expect(supervisor.startedSpec?.arguments).not.toContain('Bash');
       expect(supervisor.startedSpec?.arguments.join(' ')).not.toContain('dangerously-skip-permissions');
       expect(handle.externalSessionId).toBe('session-unit');
