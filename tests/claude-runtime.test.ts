@@ -17,7 +17,7 @@ import { buildClaudeRunArguments, buildClaudeWorkerArguments } from '../src/main
 import { ClaudeStreamJsonParser } from '../src/main/services/agents/claude/ClaudeStreamJsonParser';
 
 describe('ClaudeCodeAdapter runtime protocol', () => {
-  it('constructs a bounded headless file-edit command with explicit model and prompt', () => {
+  it('constructs a bounded headless Planner command with explicitly allowed Bash access', () => {
     const argumentsList = buildClaudeRunArguments({
       runId: 'run-1',
       workspaceId: 'workspace-1',
@@ -34,12 +34,15 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
       '--permission-mode',
       'acceptEdits',
       '--tools',
-      'Read,Edit,Write,Glob,Grep',
+      'Read,Edit,Write,Glob,Grep,Bash',
+      '--allowed-tools',
+      'Bash',
       '--output-format',
       'stream-json',
       'Create the requested marker file.',
     ]);
-    expect(argumentsList.join(' ')).not.toContain('Bash');
+    expect(argumentsList).toEqual(expect.arrayContaining(['Read,Edit,Write,Glob,Grep,Bash', '--allowed-tools', 'Bash']));
+    expect(argumentsList.join(' ')).not.toContain('dangerously-skip-permissions');
     expect(argumentsList).not.toContain('C:\\scratch\\probe');
   });
 
@@ -93,7 +96,8 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
         workingDirectory,
       });
       expect(supervisor.startedSpec?.arguments).toContain('provider/explicit-model');
-      expect(supervisor.startedSpec?.arguments).not.toContain('Bash(*)');
+      expect(supervisor.startedSpec?.arguments).toEqual(expect.arrayContaining(['Read,Edit,Write,Glob,Grep,Bash', '--allowed-tools', 'Bash']));
+      expect(supervisor.startedSpec?.arguments.join(' ')).not.toContain('dangerously-skip-permissions');
       expect(handle.externalSessionId).toBe('session-unit');
       expect(result).toMatchObject({
         succeeded: true,

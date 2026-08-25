@@ -1,4 +1,5 @@
 import type { WorkspaceTool } from '@shared/contracts/ipc';
+import { projectQuickActionTools } from '@shared/domain/projectQuickActions';
 
 import { assets } from '../assets';
 
@@ -9,28 +10,27 @@ interface QuickActionsProps {
 }
 
 export const QuickActions = ({ disabled, ideDisplayName, onLaunch }: QuickActionsProps) => {
-  const actions: ReadonlyArray<{ tool: WorkspaceTool; label: string; asset: string }> = [
-    { tool: 'terminal', label: 'Terminal', asset: assets.terminalButton },
-    { tool: 'explorer', label: 'Explorateur Windows', asset: assets.explorerButton },
-    {
-      tool: 'ide',
+  const actions: Readonly<Record<WorkspaceTool, { label: string; asset: string }>> = {
+    terminal: { label: 'Terminal', asset: assets.terminalButton },
+    explorer: { label: 'Explorateur Windows', asset: assets.explorerButton },
+    ide: {
       label: ideDisplayName ? `Ouvrir dans ${ideDisplayName}` : 'Configurer l’IDE dans Paramètres',
       asset: assets.ideButton,
     },
-  ];
+  };
 
   return (
     <div className="quick-actions">
-      {actions.map((action) => (
+      {projectQuickActionTools.map((tool) => (
         <button
           type="button"
-          key={action.tool}
+          key={tool}
           disabled={disabled}
-          title={action.label}
-          onClick={() => onLaunch(action.tool)}
+          title={actions[tool].label}
+          onClick={() => onLaunch(tool)}
         >
-          <img src={action.asset} alt="" />
-          <span>{action.label}</span>
+          <img src={actions[tool].asset} alt="" />
+          <span>{actions[tool].label}</span>
         </button>
       ))}
     </div>

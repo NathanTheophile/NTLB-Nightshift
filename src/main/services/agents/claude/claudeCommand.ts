@@ -1,6 +1,7 @@
 import type { RunStartSpec, WorkerStartSpec } from '../../contracts/AgentAdapter';
 
 const boundedFileEditTools = 'Read,Edit,Write,Glob,Grep';
+const plannerTools = `${boundedFileEditTools},Bash`;
 
 export const buildClaudeRunArguments = (spec: RunStartSpec): readonly string[] => {
   if (!spec.modelId.trim()) throw new Error('Claude runs require an explicit model.');
@@ -15,7 +16,9 @@ export const buildClaudeRunArguments = (spec: RunStartSpec): readonly string[] =
     '--permission-mode',
     'acceptEdits',
     '--tools',
-    boundedFileEditTools,
+    plannerTools,
+    '--allowed-tools',
+    'Bash',
     '--output-format',
     'stream-json',
     spec.prompt,
