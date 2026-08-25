@@ -28,7 +28,7 @@ export class PlannerTaskRepository {
       .queryAll<PlannerTaskRow>(
         `SELECT * FROM tasks
          WHERE workspace_id = ? AND visible_in_planner = 1
-         ORDER BY priority ASC, created_at ASC`,
+         ORDER BY priority ASC, created_at ASC, rowid ASC`,
         workspaceId,
       )
       .map(mapPlannerTask);
@@ -76,7 +76,7 @@ export class PlannerTaskRepository {
 
   public nextQueued(): PlannerTask | undefined {
     const row = this.database.queryOne<PlannerTaskRow>(
-      "SELECT * FROM tasks WHERE status = 'queued' AND visible_in_planner = 1 ORDER BY priority ASC, created_at ASC LIMIT 1",
+      "SELECT * FROM tasks WHERE status = 'queued' AND visible_in_planner = 1 ORDER BY priority ASC, created_at ASC, rowid ASC LIMIT 1",
     );
     return row ? mapPlannerTask(row) : undefined;
   }
