@@ -12,7 +12,7 @@ import {
   type WorkspaceTabState,
   type CreateWorkerInput,
 } from '@shared/contracts/ipc';
-import type { RunReviewExportKind } from '@shared/domain/entities';
+import type { PlannerExecutionMode, RunReviewExportKind } from '@shared/domain/entities';
 
 import type { LauncherService } from '../services/LauncherService';
 import type { PlannerService } from '../services/PlannerService';
@@ -26,7 +26,7 @@ interface IpcServices {
   appVersion: string;
   workspaces: WorkspaceService;
   planner: PlannerService;
-  plannerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
+  plannerSelectionCatalog: (executionMode: PlannerExecutionMode) => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
   runs: RunService;
   reviews: RunReviewService;
   reviewIntegration: ReviewIntegrationService;
@@ -83,7 +83,11 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     return services.planner.archiveTask(request.taskId);
   });
 
-  handle(IPC_CHANNELS.plannerSelectionCatalog, () => services.plannerSelectionCatalog());
+  handle(IPC_CHANNELS.plannerSelectionCatalog, (request) => {
+    assertRecord(request);
+    assertPlannerExecutionMode(request.executionMode);
+    return services.plannerSelectionCatalog(request.executionMode);
+  });
   handle(IPC_CHANNELS.plannerGetConcurrency, () => ({ limit: services.runs.concurrencyLimit() as 1 | 2 | 3 | 4 }));
   handle(IPC_CHANNELS.plannerSetConcurrency, (request) => {
     assertRecord(request);
@@ -232,9 +236,7 @@ function assertCreateTaskInput(value: unknown): asserts value is CreatePlannerTa
   assertNullableString(value.requestedModelId, 'requestedModelId');
   if (value.executionMode === undefined) value.executionMode = 'single_agent';
   if (value.batchSteps === undefined) value.batchSteps = [];
-  if (value.executionMode !== 'single_agent' && value.executionMode !== 'sequential_batch' && value.executionMode !== 'delegated_leader') {
-    throw new Error('Unsupported Planner execution mode.');
-  }
+  assertPlannerExecutionMode(value.executionMode);
   if (!Array.isArray(value.batchSteps) || value.batchSteps.length > 32 || !value.batchSteps.every((step) => typeof step === 'string')) {
     throw new Error('batchSteps must contain at most 32 strings.');
   }
@@ -247,6 +249,10 @@ function assertCreateTaskInput(value: unknown): asserts value is CreatePlannerTa
   if (!Number.isInteger(value.priority) || (value.priority as number) < 1 || (value.priority as number) > 99) {
     throw new Error('priority must be an integer between 1 and 99.');
   }
+}
+
+function assertPlannerExecutionMode(value: unknown): asserts value is PlannerExecutionMode {
+  if (value !== 'single_agent' && value !== 'sequential_batch' && value !== 'delegated_leader') throw new Error('Unsupported Planner execution mode.');
 }
 
 function assertCreateWorkerInput(value: unknown): asserts value is CreateWorkerInput {

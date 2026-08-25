@@ -153,12 +153,13 @@ void app.whenReady().then(() => {
     appVersion: app.getVersion(),
     workspaces: new WorkspaceService(workspaces, settings),
     planner: new PlannerService(tasks, workspaces, runService),
-    plannerSelectionCatalog: async () => {
+    plannerSelectionCatalog: async (executionMode) => {
       const activeRuntime = runtime;
       if (!activeRuntime) throw new Error('NightShift runtime is unavailable.');
       await activeRuntime.availability;
       await activeRuntime.agentRegistry.refresh();
-      const catalog = activeRuntime.agentRegistry.plannerCatalog(await activeRuntime.fccGateway.listModels());
+      const models = await activeRuntime.fccGateway.listModels();
+      const catalog = activeRuntime.agentRegistry.catalogForExecutionMode(executionMode, models);
       return { ...catalog, defaultAgentId: 'claude-code', defaultModelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b' };
     },
     runs: runService,
