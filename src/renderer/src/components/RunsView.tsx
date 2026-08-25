@@ -13,6 +13,10 @@ export const RunsView = ({ workspace, selectedRunId, onSelectRun, onError }: Run
   useEffect(() => { let current = true; if (selected) void Promise.all([window.nightShift.runs.review(selected.id), window.nightShift.runs.reviewIntegration(selected.id)]).then(([nextReview, nextIntegration]) => { if (!current) return; setReview(nextReview); setIntegration(nextIntegration); }).catch((error: unknown) => { if (current) onError(message(error)); }); return () => { current = false; }; }, [onError, selected]);
   if (!selected) return <section className="runs-view"><EmptyState eyebrow="RUNS" title="Aucune tentative" detail="Les tentatives Planner persistées apparaîtront ici." /></section>;
   if (!review) return <section className="runs-view"><p className="boot-status">Chargement du Run…</p></section>;
-  return <section className="runs-view"><RunDetailCard key={selected.id} run={selected} task={task} review={review} integration={integration} onRefresh={refresh} onError={onError} /></section>;
+  const openFollowUp = async (followUp: Run): Promise<void> => {
+    await refresh();
+    onSelectRun(followUp.id);
+  };
+  return <section className="runs-view"><RunDetailCard key={selected.id} run={selected} task={task} review={review} integration={integration} onRefresh={refresh} onFollowUpCreated={openFollowUp} onError={onError} /></section>;
 };
 const message = (error: unknown): string => error instanceof Error ? error.message : 'NightShift could not load Run history.';

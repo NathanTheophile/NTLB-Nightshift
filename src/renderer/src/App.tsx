@@ -143,11 +143,11 @@ export const App = () => {
       />
 
       <div className="tool-strip">
-        {activeSection !== 'runs' && <QuickActions
+        <QuickActions
           disabled={!activeWorkspace}
           ideDisplayName={launcherConfiguration.ideDisplayName}
           onLaunch={(tool) => void launchWorkspaceTool(tool)}
-        />}
+        />
         <h1>
           <span className="context-section">{sectionTitles[activeSection]}</span>
           {activeWorkspace && <span className="context-workspace">{activeSection === 'runs' && selectedRun ? ` - ${selectedRun.taskTitle}` : ` · ${activeWorkspace.displayName}`}</span>}
