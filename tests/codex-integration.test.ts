@@ -47,7 +47,7 @@ describe.skipIf(!probeEnabled)('CodexAdapter real FCC integration', () => {
       await expect(readFile(join(repository, 'NIGHTSHIFT_AGENT_PROBE.txt'), 'utf8')).rejects.toThrow();
       expect(await readFile(join(completed.worktreePath!, 'NIGHTSHIFT_AGENT_PROBE.txt'), 'utf8')).toBe('NIGHTSHIFT_AGENT_PROBE_OK');
       expect(completed.externalSessionId).toBeTruthy();
-      expect(service.events(completed.id).some(({ eventType }) => eventType === 'agent_protocol')).toBe(true);
+      expect(service.events(completed.id, 'raw_protocol').events.some(({ eventType }) => eventType === 'agent_protocol')).toBe(true);
       expect(adapter.capabilities().cancel).toBe(true);
     } finally { await gateway.stopOwnedProcess(); database.close(); await rm(root, { recursive: true, force: true }); }
   }, timeoutMs + 30_000);

@@ -36,7 +36,7 @@ const api: NightShiftApi = {
   },
   runs: {
     list: (workspaceId) => invoke(IPC_CHANNELS.runsList, { workspaceId }),
-    events: (runId) => invoke(IPC_CHANNELS.runsEvents, { runId }),
+    events: (request) => invoke(IPC_CHANNELS.runsEvents, request),
     batchSteps: (runId) => invoke(IPC_CHANNELS.runsBatchSteps, { runId }),
     review: (runId) => invoke(IPC_CHANNELS.runsReview, { runId }),
     fileDiff: (runId, path) => invoke(IPC_CHANNELS.runsFileDiff, { runId, path }),

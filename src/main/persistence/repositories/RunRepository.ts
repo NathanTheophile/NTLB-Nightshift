@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { BatchStep, BatchStepStatus, CandidatePublishState, PlannerExecutionMode, Run, RunEvent, RunStatus } from '@shared/domain/entities';
+import type { BatchStep, BatchStepStatus, CandidatePublishState, PlannerExecutionMode, Run, RunEvent, RunEventKind, RunEventPage, RunStatus } from '@shared/domain/entities';
 
 import type { DatabaseService } from '../DatabaseService';
 
@@ -53,11 +53,30 @@ export class RunRepository {
     this.update(id, { status, ...values }); return this.findRequired(id);
   }
   public appendEvent(runId: string, eventType: string, payload: unknown, timestamp = new Date().toISOString()): RunEvent {
+    const previous = eventType === 'agent_protocol' ? this.database.queryOne<RunEventRow>('SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence DESC LIMIT 1', runId) : undefined;
+    if (previous && canCompactProtocol(previous, payload)) {
+      const previousPayload = parsePayload(previous.payload_json) as Record<string, unknown>;
+      const fragments: unknown[] = Array.isArray(previousPayload.fragments) ? previousPayload.fragments as unknown[] : [protocolEvent(previousPayload)];
+      const compacted = { ...previousPayload, timestamp, fragments: [...fragments, protocolEvent(payload)], compaction: { sourceEventCount: fragments.length + 1, firstTimestamp: previous.timestamp, lastTimestamp: timestamp } };
+      this.database.execute('UPDATE run_events SET timestamp = ?, payload_json = ? WHERE id = ?', timestamp, JSON.stringify(compacted), previous.id);
+      return { id: previous.id, runId, sequence: previous.sequence, timestamp, eventType, payload: compacted };
+    }
     const next = this.database.queryOne<{ sequence: number }>('SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence FROM run_events WHERE run_id = ?', runId)?.sequence ?? 0;
     const id = randomUUID(); this.database.execute('INSERT INTO run_events(id, run_id, sequence, timestamp, event_type, payload_json) VALUES (?, ?, ?, ?, ?, ?)', id, runId, next, timestamp, eventType, JSON.stringify(payload));
     return { id, runId, sequence: next, timestamp, eventType, payload };
   }
   public listEvents(runId: string): RunEvent[] { return this.database.queryAll<RunEventRow>('SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence', runId).map((row) => ({ id: row.id, runId: row.run_id, sequence: row.sequence, timestamp: row.timestamp, eventType: row.event_type, payload: parsePayload(row.payload_json) })); }
+  public eventCount(runId: string, kind: RunEventKind): number {
+    const predicate = kind === 'raw_protocol' ? 'event_type = \'agent_protocol\'' : 'event_type <> \'agent_protocol\'';
+    return this.database.queryOne<{ total: number }>(`SELECT COUNT(*) AS total FROM run_events WHERE run_id = ? AND ${predicate}`, runId)?.total ?? 0;
+  }
+  public listEventPage(runId: string, kind: RunEventKind, cursor: number | null, limit: number): RunEventPage {
+    const predicate = kind === 'raw_protocol' ? 'event_type = \'agent_protocol\'' : 'event_type <> \'agent_protocol\'';
+    const total = this.eventCount(runId, kind);
+    const rows = this.database.queryAll<RunEventRow>(`SELECT * FROM run_events WHERE run_id = ? AND ${predicate} AND sequence > ? ORDER BY sequence LIMIT ?`, runId, cursor ?? -1, limit + 1);
+    const page = rows.slice(0, limit).map((row) => ({ id: row.id, runId: row.run_id, sequence: row.sequence, timestamp: row.timestamp, eventType: row.event_type, payload: parsePayload(row.payload_json) }));
+    return { events: page, total, nextCursor: rows.length > limit ? page.at(-1)?.sequence ?? null : null };
+  }
   public createBatchSteps(runId: string, prompts: readonly string[]): BatchStep[] {
     prompts.forEach((prompt, stepIndex) => this.database.execute('INSERT INTO run_batch_steps(id, run_id, step_index, prompt, status) VALUES (?, ?, ?, ?, \'pending\')', randomUUID(), runId, stepIndex, prompt));
     return this.batchSteps(runId);
@@ -74,3 +93,26 @@ export class RunRepository {
 const mapRun = (row: RunRow): Run => ({ id: row.id, taskId: row.task_id, workspaceId: row.workspace_id, resolvedAgentId: row.resolved_agent_id, resolvedModelId: row.resolved_model_id, executionMode: row.execution_mode ?? 'single_agent', status: row.status, sourceRunId: row.source_run_id, followUpPrompt: row.follow_up_prompt, baseSha: row.base_sha, worktreePath: row.worktree_path, startedAt: row.started_at, finishedAt: row.finished_at, exitCode: row.exit_code, resultSummary: row.result_summary, failureReason: row.failure_reason, validationStatus: row.validation_status, externalSessionId: row.external_session_id, finalHeadSha: row.final_head_sha, finalGitState: row.final_git_state, candidateBranchName: row.candidate_branch_name, candidateCommitSha: row.candidate_commit_sha, candidateRemoteName: row.candidate_remote_name, candidatePublishState: row.candidate_publish_state ?? 'not_published', candidatePublishedAt: row.candidate_published_at, candidateFailureReason: row.candidate_failure_reason, createdAt: row.created_at });
 const mapBatchStep = (row: BatchStepRow): BatchStep => ({ id: row.id, runId: row.run_id, stepIndex: row.step_index, prompt: row.prompt, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, externalSessionId: row.external_session_id, resultSummary: row.result_summary, failureReason: row.failure_reason });
 const parsePayload = (value: string): unknown => JSON.parse(value) as unknown;
+
+const protocolEvent = (payload: unknown): unknown => {
+  const value = payload as Record<string, unknown>;
+  return value && typeof value === 'object' && 'event' in value ? value.event : payload;
+};
+
+const canCompactProtocol = (previous: RunEventRow, nextPayload: unknown): boolean => {
+  const currentPayload = parsePayload(previous.payload_json);
+  const current = protocolEvent(currentPayload) as Record<string, unknown>;
+  const next = protocolEvent(nextPayload) as Record<string, unknown>;
+  if (!current || !next || typeof current !== 'object' || typeof next !== 'object') return false;
+  if (current.terminal !== false || next.terminal !== false || current.parseError !== null || next.parseError !== null) return false;
+  if (!isNoisyProtocolType(current.type) || current.type !== next.type || current.externalSessionId !== next.externalSessionId) return false;
+  return batchStep(currentPayload) === batchStep(nextPayload);
+};
+
+const batchStep = (payload: unknown): number | undefined => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const value = (payload as Record<string, unknown>).stepIndex;
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+};
+
+const isNoisyProtocolType = (value: unknown): value is string => typeof value === 'string' && /(?:^|[._-])(thinking|reasoning|token|delta)(?:$|[._-])/iu.test(value);

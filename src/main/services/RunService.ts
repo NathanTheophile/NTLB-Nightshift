@@ -5,7 +5,7 @@ import type { WorktreeService } from './contracts/WorktreeService';
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
-import type { BatchStep, Run, RunStatus } from '@shared/domain/entities';
+import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
 import { resolve } from 'node:path';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
@@ -23,7 +23,7 @@ export class RunService implements RunServiceContract {
   }
   public find(runId: string): Promise<Run | undefined> { return Promise.resolve(this.runs.find(runId)); }
   public list(workspaceId: string): Run[] { return this.runs.list(workspaceId); }
-  public events(runId: string) { return this.runs.listEvents(runId); }
+  public events(runId: string, kind: RunEventKind = 'activity', cursor: number | null = null, limit = 100) { return this.runs.listEventPage(runId, kind, cursor, limit); }
   public batchSteps(runId: string) { return this.runs.batchSteps(runId); }
   public schedule(): void { if (!this.scheduling) void this.runQueue().catch((error: unknown) => console.error('[Planner] Scheduler stopped unexpectedly.', error)); }
   public async requestCancellation(runId: string): Promise<Run> {

@@ -70,11 +70,38 @@ describe('RunReviewService', () => {
       await writeFile(join(fixture.worktree, 'modified.txt'), 'changed\n'); await writeFile(join(fixture.worktree, 'new.txt'), 'untracked\n');
       const markdownPath = join(fixture.root, 'review.md'); const jsonPath = join(fixture.root, 'review.json'); const zipPath = join(fixture.root, 'review.zip');
       await fixture.service.exportTo(fixture.run.id, 'markdown', markdownPath); await fixture.service.exportTo(fixture.run.id, 'json', jsonPath); await fixture.service.exportTo(fixture.run.id, 'bundle', zipPath);
-      expect(await readFile(markdownPath, 'utf8')).toContain('NightShift Run Review'); expect((JSON.parse(await readFile(jsonPath, 'utf8')) as { schemaVersion: number }).schemaVersion).toBe(1);
+      expect(await readFile(markdownPath, 'utf8')).toContain('NightShift Run Review'); expect((JSON.parse(await readFile(jsonPath, 'utf8')) as { schemaVersion: number }).schemaVersion).toBe(2);
       const bundle = (await readFile(zipPath)).toString('utf8'); expect(bundle).toContain('run-review.md'); expect(bundle).toContain('changes.patch'); expect(bundle).toContain('untracked/new.txt'); expect(bundle).not.toContain('.git/'); expect(bundle).not.toContain('deleted.txt');
     } finally { await fixture.dispose(); }
   });
+
+  it('pages high-volume protocol evidence and compacts only compatible noisy fragments', async () => {
+    const fixture = await setup();
+    try {
+      fixture.runRepository.appendEvent(fixture.run.id, 'agent_protocol', { stepIndex: 0, event: protocol('thinking.delta', 'first', 'session-a') });
+      fixture.runRepository.appendEvent(fixture.run.id, 'agent_protocol', { stepIndex: 0, event: protocol('thinking.delta', 'second', 'session-a') });
+      fixture.runRepository.appendEvent(fixture.run.id, 'agent_protocol', { stepIndex: 1, event: protocol('thinking.delta', 'other step', 'session-a') });
+      fixture.runRepository.appendEvent(fixture.run.id, 'agent_protocol', protocol('tool.call', 'must remain separate', 'session-a'));
+      for (let index = 0; index < 1_000; index += 1) fixture.runRepository.appendEvent(fixture.run.id, 'agent_protocol', protocol('assistant.message', `evidence-${index}`, 'session-a'));
+      fixture.runRepository.appendEvent(fixture.run.id, 'terminal', { status: 'completed' });
+      const first = fixture.runRepository.listEventPage(fixture.run.id, 'raw_protocol', null, 100);
+      const second = fixture.runRepository.listEventPage(fixture.run.id, 'raw_protocol', first.nextCursor, 100);
+      expect(first.total).toBe(1_003); expect(typeof first.nextCursor).toBe('number'); expect(first.events).toHaveLength(100);
+      expect(second.events[0]!.sequence).toBeGreaterThan(first.events.at(-1)!.sequence);
+      expect((first.events[0]!.payload as { compaction?: { sourceEventCount: number }; stepIndex?: number }).compaction?.sourceEventCount).toBe(2);
+      expect((first.events[0]!.payload as { stepIndex?: number }).stepIndex).toBe(0);
+      expect(fixture.runRepository.listEventPage(fixture.run.id, 'activity', null, 100)).toMatchObject({ total: 1 });
+      const review = await fixture.service.inspect(fixture.run.id); expect(review).toMatchObject({ rawProtocolTotal: 1_003, activityTotal: 1 }); expect('rawProtocol' in review).toBe(false);
+      const jsonPath = join(fixture.root, 'evidence.json'); await fixture.service.exportTo(fixture.run.id, 'json', jsonPath);
+      const evidence = JSON.parse(await readFile(jsonPath, 'utf8')) as unknown;
+      if (!evidence || typeof evidence !== 'object' || !Array.isArray((evidence as { rawProtocol?: unknown }).rawProtocol) || !Array.isArray((evidence as { activity?: unknown }).activity)) throw new Error('Invalid JSON evidence export.');
+      const streams = evidence as { rawProtocol: unknown[]; activity: unknown[] };
+      expect(streams.rawProtocol).toHaveLength(1_003); expect(streams.activity).toHaveLength(1);
+    } finally { await fixture.dispose(); }
+  });
 });
+
+const protocol = (type: string, raw: string, externalSessionId: string) => ({ sequence: 0, timestamp: '2026-08-25T00:00:00.000Z', raw, parsed: { type }, type, externalSessionId, terminal: false, parseError: null });
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-review-')); const repository = join(root, 'repository'); const storage = join(root, 'worktrees');

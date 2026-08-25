@@ -209,4 +209,9 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX runs_source_run_idx ON runs(source_run_id);
     `,
   },
+  {
+    version: 7,
+    name: 'run_event_stream_pagination_index',
+    sql: 'CREATE INDEX run_events_stream_page_idx ON run_events(run_id, event_type, sequence);',
+  },
 ];

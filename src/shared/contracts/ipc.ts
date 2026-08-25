@@ -1,4 +1,4 @@
-import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEvent, RunFileDiff, RunReview, RunReviewExportKind, RunReviewExportResult, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
+import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEventPage, RunFileDiff, RunReview, RunReviewExportKind, RunReviewExportResult, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
 
 export type WorkspaceEntryKind = 'directory' | 'file' | 'symlink';
 
@@ -61,6 +61,7 @@ export interface LaunchResult {
   status: 'launched' | 'configuration_required';
   message: string;
 }
+export interface ListRunEventsRequest { runId: string; kind: 'activity' | 'raw_protocol'; cursor?: number | null; limit?: number; }
 
 export interface BootstrapState {
   appVersion: string;
@@ -114,7 +115,7 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerArchiveTask]: { request: { taskId: string }; response: PlannerTask };
   [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
-  [IPC_CHANNELS.runsEvents]: { request: { runId: string }; response: RunEvent[] };
+  [IPC_CHANNELS.runsEvents]: { request: ListRunEventsRequest; response: RunEventPage };
   [IPC_CHANNELS.runsBatchSteps]: { request: { runId: string }; response: BatchStep[] };
   [IPC_CHANNELS.runsReview]: { request: { runId: string }; response: RunReview };
   [IPC_CHANNELS.runsFileDiff]: { request: { runId: string; path: string }; response: RunFileDiff };
@@ -159,7 +160,7 @@ export interface NightShiftApi {
   };
   runs: {
     list: (workspaceId: string) => Promise<Run[]>;
-    events: (runId: string) => Promise<RunEvent[]>;
+    events: (request: ListRunEventsRequest) => Promise<RunEventPage>;
     batchSteps: (runId: string) => Promise<BatchStep[]>;
     review: (runId: string) => Promise<RunReview>;
     fileDiff: (runId: string, path: string) => Promise<RunFileDiff>;

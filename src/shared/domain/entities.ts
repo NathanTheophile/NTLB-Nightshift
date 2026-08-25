@@ -99,6 +99,8 @@ export interface RunEvent {
   eventType: string;
   payload: unknown;
 }
+export type RunEventKind = 'activity' | 'raw_protocol';
+export interface RunEventPage { events: RunEvent[]; total: number; nextCursor: number | null; }
 
 export type RunChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'unknown';
 export interface RunChangedFile {
@@ -128,8 +130,8 @@ export interface RunReview {
   failure: string | null;
   validationStatus: string | null;
   batchSteps: BatchStep[];
-  activity: RunEvent[];
-  rawProtocol: RunEvent[];
+  activityTotal: number;
+  rawProtocolTotal: number;
   warnings: string[];
 }
 export type RunReviewExportKind = 'markdown' | 'json' | 'bundle';
