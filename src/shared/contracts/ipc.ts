@@ -1,4 +1,4 @@
-import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEventPage, RunFileDiff, RunIntegrationReview, RunReview, RunReviewExportKind, RunReviewExportResult, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
+import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEventPage, RunFileDiff, RunIntegrationReview, RunReview, RunReviewExportKind, RunReviewExportResult, RunStatus, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
 
 export type WorkspaceEntryKind = 'directory' | 'file' | 'symlink';
 
@@ -63,6 +63,7 @@ export interface LaunchResult {
   message: string;
 }
 export interface ListRunEventsRequest { runId: string; kind: 'activity' | 'raw_protocol'; cursor?: number | null; limit?: number; }
+export interface RunNavigationItem { id: string; taskId: string; taskTitle: string; status: RunStatus; createdAt: string; resolvedAgentId: string; resolvedModelId: string; }
 
 export interface BootstrapState {
   appVersion: string;
@@ -83,6 +84,7 @@ export const IPC_CHANNELS = {
   plannerGetConcurrency: 'planner:get-concurrency',
   plannerSetConcurrency: 'planner:set-concurrency',
   runsList: 'runs:list',
+  runsNavigation: 'runs:navigation',
   runsEvents: 'runs:events',
   runsBatchSteps: 'runs:batch-steps',
   runsReview: 'runs:review',
@@ -123,6 +125,7 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerGetConcurrency]: { request: undefined; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.plannerSetConcurrency]: { request: PlannerConcurrencySettings; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
+  [IPC_CHANNELS.runsNavigation]: { request: { workspaceId: string }; response: RunNavigationItem[] };
   [IPC_CHANNELS.runsEvents]: { request: ListRunEventsRequest; response: RunEventPage };
   [IPC_CHANNELS.runsBatchSteps]: { request: { runId: string }; response: BatchStep[] };
   [IPC_CHANNELS.runsReview]: { request: { runId: string }; response: RunReview };
@@ -173,6 +176,7 @@ export interface NightShiftApi {
   };
   runs: {
     list: (workspaceId: string) => Promise<Run[]>;
+    navigation: (workspaceId: string) => Promise<RunNavigationItem[]>;
     events: (request: ListRunEventsRequest) => Promise<RunEventPage>;
     batchSteps: (runId: string) => Promise<BatchStep[]>;
     review: (runId: string) => Promise<RunReview>;
