@@ -1,6 +1,7 @@
 import type { AgentAdapter, AgentExecutionResult } from './contracts/AgentAdapter';
 import type { RunService as RunServiceContract } from './contracts/RunService';
 import { runGit, type GitCommandResult } from './GitWorktreeService';
+import { ProjectValidationService } from './ProjectValidationService';
 import type { WorktreeService } from './contracts/WorktreeService';
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
@@ -15,8 +16,9 @@ export class RunService implements RunServiceContract {
   private readonly active = new Map<string, { adapter: AgentAdapter; handleId: string; timedOut: boolean }>();
   private readonly publishing = new Map<string, Promise<Run>>();
   private readonly followUpQueue: string[] = [];
+  private readonly validation: ProjectValidationService;
   private scheduling = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults) {}
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults) { this.validation = new ProjectValidationService(runs); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -25,6 +27,17 @@ export class RunService implements RunServiceContract {
   public list(workspaceId: string): Run[] { return this.runs.list(workspaceId); }
   public events(runId: string) { return this.runs.listEvents(runId); }
   public batchSteps(runId: string) { return this.runs.batchSteps(runId); }
+  public validationCommands(runId: string) { return this.runs.validationCommands(runId); }
+  public recoverInterruptedRuns(): void {
+    const reason = 'Interrupted by NightShift restart; process was not resumed. Worktree and evidence were preserved.';
+    for (const run of this.runs.runningValidations()) { this.runs.interruptRunningValidation(run.id); this.runs.setValidationStatus(run.id, 'interrupted'); this.runs.appendEvent(run.id, 'validation_recovered_after_restart', { reason: 'Validation was not resumed.' }); }
+    for (const run of this.runs.staleRuns()) {
+      for (const step of this.runs.batchSteps(run.id)) if (step.status === 'running') this.runs.setBatchStepStatus(step.id, 'failed', { finished_at: new Date().toISOString(), failure_reason: reason }); else if (step.status === 'pending') this.runs.setBatchStepStatus(step.id, 'cancelled', { finished_at: new Date().toISOString(), failure_reason: reason });
+      this.runs.setStatus(run.id, 'blocked', { finished_at: new Date().toISOString(), failure_reason: reason }); this.runs.appendEvent(run.id, 'recovered_after_restart', { previousStatus: run.status, reason });
+      if (!run.sourceRunId) this.tasks.setStatus(run.taskId, 'failed');
+    }
+    for (const run of this.runs.publishingCandidates()) { const reason = 'Candidate publishing interrupted by NightShift restart; retry is available.'; this.runs.setCandidatePublishFailure(run.id, reason); this.runs.appendEvent(run.id, 'candidate_publish_recovered', { reason }); }
+  }
   public schedule(): void { if (!this.scheduling) void this.runQueue().catch((error: unknown) => console.error('[Planner] Scheduler stopped unexpectedly.', error)); }
   public async requestCancellation(runId: string): Promise<Run> {
     const run = this.runs.findRequired(runId); if (terminalStatuses.has(run.status)) return run;
@@ -78,10 +91,12 @@ export class RunService implements RunServiceContract {
       const result = run.executionMode === 'sequential_batch'
         ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, Date.now() + this.defaults.timeoutMs)
         : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt));
-      const current = this.runs.findRequired(run.id); const finalGit = await inspectGit(worktree.path); const cancelled = current.status === 'cancel_requested';
+      const current = this.runs.findRequired(run.id); const cancelled = current.status === 'cancel_requested';
       const status: RunStatus = current.status === 'timed_out' ? 'timed_out' : cancelled ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
+      if (status === 'completed') await this.validation.validate(run.id, worktree.path);
+      const finalGit = await inspectGit(worktree.path);
       if (!isFollowUp) this.tasks.setStatus(task.id, taskStatus(status));
-      this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), exit_code: result.exitCode, result_summary: result.terminalEvent?.raw ?? null, failure_reason: status === 'completed' ? null : result.failureReason ?? (cancelled ? 'Cancelled by user.' : 'Run failed.'), validation_status: 'not_configured', external_session_id: result.externalSessionId, final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
+      this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), exit_code: result.exitCode, result_summary: result.terminalEvent?.raw ?? null, failure_reason: status === 'completed' ? null : result.failureReason ?? (cancelled ? 'Cancelled by user.' : 'Run failed.'), validation_status: this.runs.findRequired(run.id).validationStatus ?? 'not_configured', external_session_id: result.externalSessionId, final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       this.runs.appendEvent(run.id, 'terminal', { status, exitCode: result.exitCode, signal: result.signal });
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(status), { status });
     } catch (error) {

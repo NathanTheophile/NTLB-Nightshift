@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { BatchStep, BatchStepStatus, CandidatePublishState, PlannerExecutionMode, Run, RunEvent, RunStatus } from '@shared/domain/entities';
+import type { BatchStep, BatchStepStatus, CandidatePublishState, PlannerExecutionMode, Run, RunEvent, RunStatus, RunValidationCommand, ValidationCommandStatus, ValidationStatus } from '@shared/domain/entities';
 
 import type { DatabaseService } from '../DatabaseService';
 
@@ -8,7 +8,7 @@ interface RunRow {
   id: string; task_id: string; workspace_id: string; resolved_agent_id: string; resolved_model_id: string;
   status: RunStatus; execution_mode: PlannerExecutionMode; base_sha: string | null; worktree_path: string | null; started_at: string | null;
   finished_at: string | null; exit_code: number | null; result_summary: string | null; failure_reason: string | null;
-  validation_status: string | null; external_session_id: string | null; final_head_sha: string | null;
+  validation_status: ValidationStatus | null; external_session_id: string | null; final_head_sha: string | null;
   final_git_state: string | null; source_run_id: string | null; follow_up_prompt: string | null;
   candidate_branch_name: string | null; candidate_commit_sha: string | null; candidate_remote_name: string | null;
   candidate_publish_state: CandidatePublishState; candidate_published_at: string | null;
@@ -16,6 +16,7 @@ interface RunRow {
 }
 interface RunEventRow { id: string; run_id: string; sequence: number; timestamp: string; event_type: string; payload_json: string; }
 interface BatchStepRow { id: string; run_id: string; step_index: number; prompt: string; status: BatchStepStatus; started_at: string | null; finished_at: string | null; external_session_id: string | null; result_summary: string | null; failure_reason: string | null; }
+interface ValidationCommandRow { id: string; run_id: string; sequence: number; profile_id: string; command: string; status: ValidationCommandStatus; started_at: string; finished_at: string | null; exit_code: number | null; output: string; output_truncated: number; }
 
 export class RunRepository {
   public constructor(private readonly database: DatabaseService) {}
@@ -63,6 +64,19 @@ export class RunRepository {
     return this.batchSteps(runId);
   }
   public batchSteps(runId: string): BatchStep[] { return this.database.queryAll<BatchStepRow>('SELECT * FROM run_batch_steps WHERE run_id = ? ORDER BY step_index', runId).map(mapBatchStep); }
+  public validationCommands(runId: string): RunValidationCommand[] { return this.database.queryAll<ValidationCommandRow>('SELECT * FROM run_validation_commands WHERE run_id = ? ORDER BY sequence', runId).map(mapValidationCommand); }
+  public setValidationStatus(id: string, status: ValidationStatus): Run { this.update(id, { validation_status: status }); return this.findRequired(id); }
+  public startValidationCommand(runId: string, profileId: string, command: string): RunValidationCommand {
+    const sequence = this.database.queryOne<{ sequence: number }>('SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence FROM run_validation_commands WHERE run_id = ?', runId)?.sequence ?? 0; const id = randomUUID(); const startedAt = new Date().toISOString();
+    this.database.execute("INSERT INTO run_validation_commands(id, run_id, sequence, profile_id, command, status, started_at) VALUES (?, ?, ?, ?, ?, 'running', ?)", id, runId, sequence, profileId, command, startedAt); return this.validationCommands(runId).at(-1)!;
+  }
+  public finishValidationCommand(id: string, status: Exclude<ValidationCommandStatus, 'running'>, exitCode: number | null, output: string, outputTruncated: boolean): RunValidationCommand {
+    this.database.execute('UPDATE run_validation_commands SET status = ?, finished_at = ?, exit_code = ?, output = ?, output_truncated = ? WHERE id = ?', status, new Date().toISOString(), exitCode, output, outputTruncated ? 1 : 0, id); const row = this.database.queryOne<ValidationCommandRow>('SELECT * FROM run_validation_commands WHERE id = ?', id); if (!row) throw new Error(`Validation command ${id} was not found.`); return mapValidationCommand(row);
+  }
+  public interruptRunningValidation(runId: string): void { this.database.execute("UPDATE run_validation_commands SET status = 'interrupted', finished_at = ?, output = CASE WHEN output = '' THEN ? ELSE output END WHERE run_id = ? AND status = 'running'", new Date().toISOString(), 'Validation interrupted by NightShift restart.', runId); }
+  public staleRuns(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE status IN ('preparing', 'running', 'cancel_requested') ORDER BY created_at").map(mapRun); }
+  public runningValidations(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE validation_status = 'running' ORDER BY created_at").map(mapRun); }
+  public publishingCandidates(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE candidate_publish_state = 'publishing'").map(mapRun); }
   public setBatchStepStatus(id: string, status: BatchStepStatus, values: Partial<Pick<BatchStepRow, 'started_at' | 'finished_at' | 'external_session_id' | 'result_summary' | 'failure_reason'>> = {}): BatchStep {
     const entries = Object.entries({ status, ...values }).filter(([, value]) => value !== undefined);
     this.database.execute(`UPDATE run_batch_steps SET ${entries.map(([field]) => `${field} = ?`).join(', ')} WHERE id = ?`, ...entries.map(([, value]) => value), id);
@@ -73,4 +87,5 @@ export class RunRepository {
 
 const mapRun = (row: RunRow): Run => ({ id: row.id, taskId: row.task_id, workspaceId: row.workspace_id, resolvedAgentId: row.resolved_agent_id, resolvedModelId: row.resolved_model_id, executionMode: row.execution_mode ?? 'single_agent', status: row.status, sourceRunId: row.source_run_id, followUpPrompt: row.follow_up_prompt, baseSha: row.base_sha, worktreePath: row.worktree_path, startedAt: row.started_at, finishedAt: row.finished_at, exitCode: row.exit_code, resultSummary: row.result_summary, failureReason: row.failure_reason, validationStatus: row.validation_status, externalSessionId: row.external_session_id, finalHeadSha: row.final_head_sha, finalGitState: row.final_git_state, candidateBranchName: row.candidate_branch_name, candidateCommitSha: row.candidate_commit_sha, candidateRemoteName: row.candidate_remote_name, candidatePublishState: row.candidate_publish_state ?? 'not_published', candidatePublishedAt: row.candidate_published_at, candidateFailureReason: row.candidate_failure_reason, createdAt: row.created_at });
 const mapBatchStep = (row: BatchStepRow): BatchStep => ({ id: row.id, runId: row.run_id, stepIndex: row.step_index, prompt: row.prompt, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, externalSessionId: row.external_session_id, resultSummary: row.result_summary, failureReason: row.failure_reason });
+const mapValidationCommand = (row: ValidationCommandRow): RunValidationCommand => ({ id: row.id, runId: row.run_id, sequence: row.sequence, profileId: row.profile_id, command: row.command, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, exitCode: row.exit_code, output: row.output, outputTruncated: row.output_truncated === 1 });
 const parsePayload = (value: string): unknown => JSON.parse(value) as unknown;

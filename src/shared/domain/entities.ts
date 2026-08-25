@@ -59,6 +59,9 @@ export type RunStatus =
   | 'cancelled'
   | 'timed_out';
 
+export type ValidationStatus = 'not_configured' | 'running' | 'passed' | 'failed' | 'interrupted';
+export type ValidationCommandStatus = 'running' | 'passed' | 'failed' | 'interrupted';
+
 export type CandidatePublishState = 'not_published' | 'publishing' | 'published' | 'failed';
 
 export interface Run {
@@ -78,7 +81,7 @@ export interface Run {
   exitCode: number | null;
   resultSummary: string | null;
   failureReason: string | null;
-  validationStatus: string | null;
+  validationStatus: ValidationStatus | null;
   externalSessionId: string | null;
   finalHeadSha: string | null;
   finalGitState: string | null;
@@ -89,6 +92,20 @@ export interface Run {
   candidatePublishedAt: IsoTimestamp | null;
   candidateFailureReason: string | null;
   createdAt: IsoTimestamp;
+}
+
+export interface RunValidationCommand {
+  id: EntityId;
+  runId: EntityId;
+  sequence: number;
+  profileId: string;
+  command: string;
+  status: ValidationCommandStatus;
+  startedAt: IsoTimestamp;
+  finishedAt: IsoTimestamp | null;
+  exitCode: number | null;
+  output: string;
+  outputTruncated: boolean;
 }
 
 export interface RunEvent {
@@ -127,6 +144,7 @@ export interface RunReview {
   result: string | null;
   failure: string | null;
   validationStatus: string | null;
+  validationCommands: RunValidationCommand[];
   batchSteps: BatchStep[];
   activity: RunEvent[];
   rawProtocol: RunEvent[];

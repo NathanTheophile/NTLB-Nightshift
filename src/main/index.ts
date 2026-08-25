@@ -162,6 +162,7 @@ void app.whenReady().then(() => {
     },
     launcher: new LauncherService(settings, workspaces, reviewService),
   });
+  runService.recoverInterruptedRuns();
   runService.schedule();
 
   createWindow();
