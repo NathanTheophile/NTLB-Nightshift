@@ -11,7 +11,7 @@ import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceR
 import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
 import { resolve } from 'node:path';
-import { devBaseKey } from './ReviewIntegrationService';
+import { resolveEffectiveDevBase } from './ReviewIntegrationService';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 
@@ -316,9 +316,8 @@ export class RunService implements RunServiceContract {
     const active = this.active.get(runId); if (active) { active.timedOut = true; await active.cancel(); await completion.catch(() => undefined); }
   }
   private async plannerBase(rootPath: string, workspaceId: string): Promise<GitCommandResult> {
-    const canonical = this.settings?.get<string>(devBaseKey(workspaceId));
-    if (canonical) { const resolved = await runGit(rootPath, ['rev-parse', '--verify', `${canonical}^{commit}`]); if (resolved.exitCode === 0) return resolved; }
-    return runGit(rootPath, ['rev-parse', '--verify', 'refs/heads/dev']);
+    const sha = await resolveEffectiveDevBase(rootPath, workspaceId, this.settings);
+    return { stdout: `${sha}\n`, stderr: '', exitCode: 0 };
   }
 }
 const taskStatus = (status: RunStatus): 'completed' | 'failed' | 'blocked' | 'cancelled' => status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'timed_out' ? 'failed' : status === 'failed' ? 'failed' : 'blocked';
