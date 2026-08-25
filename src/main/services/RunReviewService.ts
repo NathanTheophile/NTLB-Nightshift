@@ -19,9 +19,8 @@ export class RunReviewService {
 
   public async inspect(runId: string): Promise<RunReview> {
     const run = this.runs.findRequired(runId);
-    const activity = this.runs.listEvents(runId);
     const batchSteps = this.runs.batchSteps(runId);
-    const review: RunReview = { run, worktreeHead: null, gitStatus: '', changedFiles: [], result: run.resultSummary, failure: run.failureReason, validationStatus: run.validationStatus, batchSteps, activity: activity.filter((event) => event.eventType !== 'agent_protocol'), rawProtocol: activity.filter((event) => event.eventType === 'agent_protocol'), warnings: [] };
+    const review: RunReview = { run, worktreeHead: null, gitStatus: '', changedFiles: [], result: run.resultSummary, failure: run.failureReason, validationStatus: run.validationStatus, validationCommands: this.runs.validationCommands(runId), batchSteps, activityTotal: this.runs.eventCount(runId, 'activity'), rawProtocolTotal: this.runs.eventCount(runId, 'raw_protocol'), warnings: [] };
     const worktree = await this.validWorktree(run, review.warnings);
     if (!worktree || !run.baseSha) {
       if (!run.baseSha) review.warnings.push('The Run has no recorded base SHA; base-relative review is unavailable.');
@@ -57,7 +56,7 @@ export class RunReviewService {
   public async exportTo(runId: string, kind: RunReviewExportKind, outputPath: string): Promise<RunReviewExportResult> {
     const review = await this.inspect(runId);
     if (kind === 'markdown') await writeFile(outputPath, markdown(review), 'utf8');
-    else if (kind === 'json') await writeFile(outputPath, `${JSON.stringify(jsonExport(review), null, 2)}\n`, 'utf8');
+    else if (kind === 'json') await this.writeEvidenceJson(review, outputPath);
     else await this.writeBundle(review, outputPath);
     return { path: outputPath, kind };
   }
@@ -108,7 +107,7 @@ export class RunReviewService {
       entries.push({ name, content }); totalBytes += zipBytes; return true;
     };
     add('run-review.md', Buffer.from(markdown(review)));
-    add('run.json', Buffer.from(`${JSON.stringify(jsonExport(review), null, 2)}\n`));
+    add('run.json', Buffer.from(`${JSON.stringify(compactJsonExport(review), null, 2)}\n`));
     add('status.txt', Buffer.from(review.gitStatus));
     const patch = await this.fullPatch(review, MAX_BUNDLE_BYTES - totalBytes - 128);
     add('changes.patch', Buffer.from(patch));
@@ -120,6 +119,27 @@ export class RunReviewService {
       if (!add(`untracked/${file.path.replaceAll('\\', '/')}`, content)) break;
     }
     await mkdir(dirname(outputPath), { recursive: true }); await writeZip(outputPath, entries);
+  }
+
+  private async writeEvidenceJson(review: RunReview, outputPath: string): Promise<void> {
+    await mkdir(dirname(outputPath), { recursive: true });
+    const file = await open(outputPath, 'w');
+    try {
+      await file.write(`${JSON.stringify({ schemaVersion: 2, exportedAt: new Date().toISOString(), review })}\n`.replace(/}\n$/, ',"activity":['));
+      await this.writeEventStream(file, review.run.id, 'activity');
+      await file.write('],"rawProtocol":[');
+      await this.writeEventStream(file, review.run.id, 'raw_protocol');
+      await file.write(']}\n');
+    } finally { await file.close(); }
+  }
+
+  private async writeEventStream(file: Awaited<ReturnType<typeof open>>, runId: string, kind: 'activity' | 'raw_protocol'): Promise<void> {
+    let cursor: number | null = null; let first = true;
+    do {
+      const page = this.runs.listEventPage(runId, kind, cursor, 200);
+      for (const event of page.events) { await file.write(`${first ? '' : ','}${JSON.stringify(event)}`); first = false; }
+      cursor = page.nextCursor;
+    } while (cursor !== null);
   }
 
   private async fullPatch(review: RunReview, maxBytes = MAX_GIT_OUTPUT): Promise<string> {
@@ -158,8 +178,8 @@ const safeChild = (root: string, path: string): string | undefined => { if (!pat
 const safeRegularFile = async (root: string, path: string): Promise<string | undefined> => { const target = safeChild(root, path); if (!target) return undefined; const direct = await lstat(target); if (!direct.isFile() || direct.isSymbolicLink()) return undefined; const canonical = await realpath(target); return isInside(root, canonical) ? canonical : undefined; };
 const isBinary = (value: Buffer): boolean => value.includes(0);
 const git = (cwd: string, args: string[], maxBytes = MAX_GIT_OUTPUT): Promise<{ stdout: string; exitCode: number; truncated: boolean }> => new Promise((done, reject) => { const child = spawn('git', ['-C', cwd, ...args], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let size = 0; let truncated = false; child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { size += Buffer.byteLength(chunk); if (size <= maxBytes) stdout += chunk; else truncated = true; }); child.once('error', reject); child.once('close', (exitCode) => done({ stdout, exitCode: exitCode ?? -1, truncated })); });
-const markdown = (review: RunReview): string => `# NightShift Run Review\n\n- Run: ${review.run.id}\n- Status: ${review.run.status}\n- Mode: ${review.run.executionMode}\n- Agent / model: ${review.run.resolvedAgentId} / ${review.run.resolvedModelId}\n- Session: ${review.run.externalSessionId ?? '—'}\n- Base SHA: ${review.run.baseSha ?? '—'}\n- Worktree HEAD: ${review.worktreeHead ?? review.run.finalHeadSha ?? '—'}\n- Validation: ${review.validationStatus ?? '—'}\n\n## Result\n\n${review.result ?? '—'}\n\n## Failure\n\n${review.failure ?? '—'}\n\n## Changed files\n\n${review.changedFiles.length ? review.changedFiles.map((file) => `- ${file.kind}: \`${file.path}\`${file.previousPath ? ` (from \`${file.previousPath}\`)` : ''}${file.note ? ` — ${file.note}` : ''}`).join('\n') : 'No changes detected.'}\n\n## Batch steps\n\n${review.batchSteps.length ? review.batchSteps.map((step) => `- ${step.stepIndex + 1}. ${step.status}: ${step.prompt}`).join('\n') : '—'}\n\n## Git status\n\n\`\`\`text\n${review.gitStatus}\`\`\`\n`;
-const jsonExport = (review: RunReview): { schemaVersion: 1; exportedAt: string; review: RunReview } => ({ schemaVersion: 1, exportedAt: new Date().toISOString(), review });
+const markdown = (review: RunReview): string => `# NightShift Run Review\n\n- Run: ${review.run.id}\n- Status: ${review.run.status}\n- Mode: ${review.run.executionMode}\n- Agent / model: ${review.run.resolvedAgentId} / ${review.run.resolvedModelId}\n- Session: ${review.run.externalSessionId ?? '—'}\n- Base SHA: ${review.run.baseSha ?? '—'}\n- Worktree HEAD: ${review.worktreeHead ?? review.run.finalHeadSha ?? '—'}\n- Validation: ${review.validationStatus ?? '—'}\n\n## Result\n\n${review.result ?? '—'}\n\n## Failure\n\n${review.failure ?? '—'}\n\n## Validation commands\n\n${review.validationCommands.length ? review.validationCommands.map((command) => `- ${command.status}: ${command.command} (${command.exitCode ?? '—'})`).join('\n') : '—'}\n\n## Changed files\n\n${review.changedFiles.length ? review.changedFiles.map((file) => `- ${file.kind}: \`${file.path}\`${file.previousPath ? ` (from \`${file.previousPath}\`)` : ''}${file.note ? ` — ${file.note}` : ''}`).join('\n') : 'No changes detected.'}\n\n## Batch steps\n\n${review.batchSteps.length ? review.batchSteps.map((step) => `- ${step.stepIndex + 1}. ${step.status}: ${step.prompt}`).join('\n') : '—'}\n\n## Git status\n\n\`\`\`text\n${review.gitStatus}\`\`\`\n`;
+const compactJsonExport = (review: RunReview): { schemaVersion: 2; exportedAt: string; review: RunReview } => ({ schemaVersion: 2, exportedAt: new Date().toISOString(), review });
 interface ZipEntry { name: string; content: Buffer; }
 const writeZip = async (path: string, entries: readonly ZipEntry[]): Promise<void> => { const parts: Buffer[] = []; const central: Buffer[] = []; let offset = 0; for (const entry of entries) { if (!validZipName(entry.name)) continue; const name = Buffer.from(entry.name); const crc = crc32(entry.content); const header = Buffer.alloc(30); header.writeUInt32LE(0x04034b50, 0); header.writeUInt16LE(20, 4); header.writeUInt32LE(crc, 14); header.writeUInt32LE(entry.content.length, 18); header.writeUInt32LE(entry.content.length, 22); header.writeUInt16LE(name.length, 26); parts.push(header, name, entry.content); const directory = Buffer.alloc(46); directory.writeUInt32LE(0x02014b50, 0); directory.writeUInt16LE(20, 4); directory.writeUInt16LE(20, 6); directory.writeUInt32LE(crc, 16); directory.writeUInt32LE(entry.content.length, 20); directory.writeUInt32LE(entry.content.length, 24); directory.writeUInt16LE(name.length, 28); directory.writeUInt32LE(offset, 42); central.push(directory, name); offset += header.length + name.length + entry.content.length; } const centralSize = central.reduce((total, item) => total + item.length, 0); const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12); end.writeUInt32LE(offset, 16); await writeFile(path, Buffer.concat([...parts, ...central, end])); };
 const validZipName = (name: string): boolean => !name.includes('..') && !name.startsWith('/') && !name.startsWith('\\') && !name.includes(':');

@@ -49,7 +49,7 @@ describe('Planner Run vertical slice', () => {
       const steps = service.batchSteps(run.id);
       expect(run.executionMode).toBe('sequential_batch'); expect(adapter.starts).toBe(2); expect(new Set(adapter.workingDirectories)).toEqual(new Set([completed.worktreePath]));
       expect(steps.map((step) => step.status)).toEqual(['completed', 'completed']);
-      expect(service.events(run.id).map((event) => event.eventType)).toEqual(expect.arrayContaining(['batch_started', 'batch_step_started', 'batch_step_completed', 'batch_completed']));
+      expect(service.events(run.id, 'activity').events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['batch_started', 'batch_step_started', 'batch_step_completed', 'batch_completed']));
       expect(fixture.tasks.findById(task.id)?.executionMode).toBe('sequential_batch');
     } finally { await fixture.dispose(); }
   });
@@ -124,7 +124,7 @@ describe('Planner Run vertical slice', () => {
       expect(await readFile(join(completed.worktreePath!, 'marker.txt'), 'utf8')).toBe('changed by planner\n');
       expect(completed.status).toBe('completed'); expect(completed.baseSha).toBeTruthy(); expect(completed.finalHeadSha).toBeTruthy(); expect(completed.externalSessionId).toBe('session-test');
       expect(completed.finalGitState).toContain('marker.txt');
-      expect(service.events(completed.id).map((event) => event.eventType)).toContain('agent_protocol');
+      expect(service.events(completed.id, 'raw_protocol').events.map((event) => event.eventType)).toContain('agent_protocol');
       expect(fixture.tasks.findById(task.id)?.status).toBe('completed');
     } finally { await fixture.dispose(); }
   });

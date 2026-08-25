@@ -59,6 +59,9 @@ export type RunStatus =
   | 'cancelled'
   | 'timed_out';
 
+export type ValidationStatus = 'not_configured' | 'running' | 'passed' | 'failed' | 'interrupted';
+export type ValidationCommandStatus = 'running' | 'passed' | 'failed' | 'interrupted';
+
 export type CandidatePublishState = 'not_published' | 'publishing' | 'published' | 'failed';
 
 export interface Run {
@@ -78,7 +81,7 @@ export interface Run {
   exitCode: number | null;
   resultSummary: string | null;
   failureReason: string | null;
-  validationStatus: string | null;
+  validationStatus: ValidationStatus | null;
   externalSessionId: string | null;
   finalHeadSha: string | null;
   finalGitState: string | null;
@@ -91,6 +94,20 @@ export interface Run {
   createdAt: IsoTimestamp;
 }
 
+export interface RunValidationCommand {
+  id: EntityId;
+  runId: EntityId;
+  sequence: number;
+  profileId: string;
+  command: string;
+  status: ValidationCommandStatus;
+  startedAt: IsoTimestamp;
+  finishedAt: IsoTimestamp | null;
+  exitCode: number | null;
+  output: string;
+  outputTruncated: boolean;
+}
+
 export interface RunEvent {
   id: EntityId;
   runId: EntityId;
@@ -99,6 +116,8 @@ export interface RunEvent {
   eventType: string;
   payload: unknown;
 }
+export type RunEventKind = 'activity' | 'raw_protocol';
+export interface RunEventPage { events: RunEvent[]; total: number; nextCursor: number | null; }
 
 export type RunChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'unknown';
 export interface RunChangedFile {
@@ -127,9 +146,10 @@ export interface RunReview {
   result: string | null;
   failure: string | null;
   validationStatus: string | null;
+  validationCommands: RunValidationCommand[];
   batchSteps: BatchStep[];
-  activity: RunEvent[];
-  rawProtocol: RunEvent[];
+  activityTotal: number;
+  rawProtocolTotal: number;
   warnings: string[];
 }
 export type RunReviewExportKind = 'markdown' | 'json' | 'bundle';

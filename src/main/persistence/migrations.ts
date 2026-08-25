@@ -209,4 +209,30 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX runs_source_run_idx ON runs(source_run_id);
     `,
   },
+  {
+    version: 7,
+    name: 'run_event_stream_pagination_index',
+    sql: 'CREATE INDEX run_events_stream_page_idx ON run_events(run_id, event_type, sequence);',
+  },
+  {
+    version: 8,
+    name: 'run_validation_evidence_and_restart_recovery',
+    sql: `
+      CREATE TABLE run_validation_commands (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+        sequence INTEGER NOT NULL CHECK (sequence >= 0),
+        profile_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'passed', 'failed', 'interrupted')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        exit_code INTEGER,
+        output TEXT NOT NULL DEFAULT '',
+        output_truncated INTEGER NOT NULL DEFAULT 0 CHECK (output_truncated IN (0, 1)),
+        UNIQUE(run_id, sequence)
+      );
+      CREATE INDEX run_validation_commands_run_idx ON run_validation_commands(run_id, sequence);
+    `,
+  },
 ];

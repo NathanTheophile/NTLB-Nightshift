@@ -1,35 +1,50 @@
 import type { AgentAdapter, AgentExecutionResult } from './contracts/AgentAdapter';
 import type { RunService as RunServiceContract } from './contracts/RunService';
 import { runGit, type GitCommandResult } from './GitWorktreeService';
+import { ProjectValidationService } from './ProjectValidationService';
+import { WindowsProcessSupervisor } from './WindowsProcessSupervisor';
+import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
 import type { WorktreeService } from './contracts/WorktreeService';
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
-import type { BatchStep, Run, RunStatus } from '@shared/domain/entities';
+import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
 import { resolve } from 'node:path';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 
 export interface PlannerRunDefaults { agentId: string; modelId: string; timeoutMs: number; }
 export class RunService implements RunServiceContract {
-  private readonly active = new Map<string, { adapter: AgentAdapter; handleId: string; timedOut: boolean }>();
+  private readonly active = new Map<string, { cancel: () => Promise<void>; timedOut: boolean }>();
   private readonly publishing = new Map<string, Promise<Run>>();
   private readonly followUpQueue: string[] = [];
+  private readonly validation: ProjectValidationService;
   private scheduling = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults) {}
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor()) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
   }
   public find(runId: string): Promise<Run | undefined> { return Promise.resolve(this.runs.find(runId)); }
   public list(workspaceId: string): Run[] { return this.runs.list(workspaceId); }
-  public events(runId: string) { return this.runs.listEvents(runId); }
+  public events(runId: string, kind: RunEventKind = 'activity', cursor: number | null = null, limit = 100) { return this.runs.listEventPage(runId, kind, cursor, limit); }
   public batchSteps(runId: string) { return this.runs.batchSteps(runId); }
+  public validationCommands(runId: string) { return this.runs.validationCommands(runId); }
+  public recoverInterruptedRuns(): void {
+    const reason = 'Interrupted by NightShift restart; process was not resumed. Worktree and evidence were preserved.';
+    for (const run of this.runs.runningValidations()) { this.runs.interruptRunningValidation(run.id); this.runs.setValidationStatus(run.id, 'interrupted'); this.runs.appendEvent(run.id, 'validation_recovered_after_restart', { reason: 'Validation was not resumed.' }); }
+    for (const run of this.runs.staleRuns()) {
+      for (const step of this.runs.batchSteps(run.id)) if (step.status === 'running') this.runs.setBatchStepStatus(step.id, 'failed', { finished_at: new Date().toISOString(), failure_reason: reason }); else if (step.status === 'pending') this.runs.setBatchStepStatus(step.id, 'cancelled', { finished_at: new Date().toISOString(), failure_reason: reason });
+      this.runs.setStatus(run.id, 'blocked', { finished_at: new Date().toISOString(), failure_reason: reason }); this.runs.appendEvent(run.id, 'recovered_after_restart', { previousStatus: run.status, reason });
+      if (!run.sourceRunId) this.tasks.setStatus(run.taskId, 'failed');
+    }
+    for (const run of this.runs.publishingCandidates()) { const reason = 'Candidate publishing interrupted by NightShift restart; retry is available.'; this.runs.setCandidatePublishFailure(run.id, reason); this.runs.appendEvent(run.id, 'candidate_publish_recovered', { reason }); }
+  }
   public schedule(): void { if (!this.scheduling) void this.runQueue().catch((error: unknown) => console.error('[Planner] Scheduler stopped unexpectedly.', error)); }
   public async requestCancellation(runId: string): Promise<Run> {
     const run = this.runs.findRequired(runId); if (terminalStatuses.has(run.status)) return run;
     this.runs.setStatus(runId, 'cancel_requested'); this.runs.appendEvent(runId, 'cancellation_requested', {});
-    const active = this.active.get(runId); if (active) await active.adapter.cancel(active.handleId);
+    const active = this.active.get(runId); if (active) await active.cancel();
     return this.runs.findRequired(runId);
   }
   public publishCandidate(runId: string): Promise<Run> {
@@ -75,13 +90,21 @@ export class RunService implements RunServiceContract {
       this.runs.setPreparation(run.id, worktree.baseSha, worktree.path); this.runs.appendEvent(run.id, 'worktree_created', worktree);
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
+      const deadline = Date.now() + this.defaults.timeoutMs;
       const result = run.executionMode === 'sequential_batch'
-        ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, Date.now() + this.defaults.timeoutMs)
-        : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt));
-      const current = this.runs.findRequired(run.id); const finalGit = await inspectGit(worktree.path); const cancelled = current.status === 'cancel_requested';
-      const status: RunStatus = current.status === 'timed_out' ? 'timed_out' : cancelled ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
+        ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, deadline)
+        : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), deadline);
+      const current = this.runs.findRequired(run.id); const cancelled = current.status === 'cancel_requested';
+      let status: RunStatus = current.status === 'timed_out' ? 'timed_out' : cancelled ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
+      if (status === 'completed') {
+        const validationStatus = await this.validation.validate(run.id, worktree.path, { deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', onProcessStarted: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), onProcessFinished: () => this.active.delete(run.id) });
+        const afterValidation = this.runs.findRequired(run.id);
+        if (afterValidation.status === 'cancel_requested') status = 'cancelled';
+        else if (validationStatus === 'interrupted' && Date.now() >= deadline) { status = 'timed_out'; this.runs.appendEvent(run.id, 'timeout', { phase: 'validation' }); }
+      }
+      const finalGit = await inspectGit(worktree.path);
       if (!isFollowUp) this.tasks.setStatus(task.id, taskStatus(status));
-      this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), exit_code: result.exitCode, result_summary: result.terminalEvent?.raw ?? null, failure_reason: status === 'completed' ? null : result.failureReason ?? (cancelled ? 'Cancelled by user.' : 'Run failed.'), validation_status: 'not_configured', external_session_id: result.externalSessionId, final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
+      this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), exit_code: result.exitCode, result_summary: result.terminalEvent?.raw ?? null, failure_reason: status === 'completed' ? null : status === 'timed_out' ? 'Run exceeded the hard timeout.' : result.failureReason ?? (cancelled ? 'Cancelled by user.' : 'Run failed.'), validation_status: this.runs.findRequired(run.id).validationStatus ?? 'not_configured', external_session_id: result.externalSessionId, final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       this.runs.appendEvent(run.id, 'terminal', { status, exitCode: result.exitCode, signal: result.signal });
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(status), { status });
     } catch (error) {
@@ -169,11 +192,11 @@ export class RunService implements RunServiceContract {
       throw error;
     }
   }
-  private async executeSingle(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, prompt: string): Promise<AgentExecutionResult> {
+  private async executeSingle(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, prompt: string, deadline: number): Promise<AgentExecutionResult> {
     const handle = await adapter.startRun({ runId, workspaceId, workingDirectory, modelId, prompt, onProtocolEvent: (event) => this.runs.appendEvent(runId, 'agent_protocol', event, event.timestamp) });
-    this.active.set(runId, { adapter, handleId: handle.handleId, timedOut: false });
+    this.active.set(runId, { cancel: () => adapter.cancel(handle.handleId), timedOut: false });
     if (this.runs.findRequired(runId).status === 'cancel_requested') await adapter.cancel(handle.handleId);
-    return this.waitWithTimeout(runId, handle.completion);
+    return this.waitWithTimeout(runId, handle.completion, Math.max(0, deadline - Date.now()));
   }
   private async executeBatch(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, sharedPrompt: string, steps: readonly BatchStep[], deadline: number): Promise<AgentExecutionResult> {
     this.runs.appendEvent(runId, 'batch_started', { stepCount: steps.length });
@@ -189,7 +212,7 @@ export class RunService implements RunServiceContract {
         if (deadline <= Date.now()) { await this.timeoutRun(runId, Promise.resolve()); throw new RunTimeoutError(); }
         const prompt = sharedPrompt ? `Shared batch context:\n${sharedPrompt}\n\nCurrent ordered step:\n${step.prompt}` : step.prompt;
         const handle = await adapter.startRun({ runId, workspaceId, workingDirectory, modelId, prompt, onProtocolEvent: (event) => this.runs.appendEvent(runId, 'agent_protocol', { stepIndex: step.stepIndex, event }, event.timestamp) });
-        this.active.set(runId, { adapter, handleId: handle.handleId, timedOut: false });
+        this.active.set(runId, { cancel: () => adapter.cancel(handle.handleId), timedOut: false });
         if (this.runs.findRequired(runId).status === 'cancel_requested') await adapter.cancel(handle.handleId);
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) { await this.timeoutRun(runId, handle.completion); throw new RunTimeoutError(); }
@@ -240,7 +263,7 @@ export class RunService implements RunServiceContract {
   }
   private async timeoutRun(runId: string, completion: Promise<unknown>): Promise<void> {
     this.runs.setStatus(runId, 'timed_out', { finished_at: new Date().toISOString(), failure_reason: 'Run exceeded the hard timeout.' }); this.runs.appendEvent(runId, 'timeout', {});
-    const active = this.active.get(runId); if (active) { active.timedOut = true; await active.adapter.cancel(active.handleId); await completion.catch(() => undefined); }
+    const active = this.active.get(runId); if (active) { active.timedOut = true; await active.cancel(); await completion.catch(() => undefined); }
   }
 }
 const taskStatus = (status: RunStatus): 'completed' | 'failed' | 'blocked' | 'cancelled' => status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'timed_out' ? 'failed' : status === 'failed' ? 'failed' : 'blocked';

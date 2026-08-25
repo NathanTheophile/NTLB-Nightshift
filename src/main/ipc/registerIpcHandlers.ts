@@ -6,6 +6,7 @@ import {
   type IpcChannel,
   type IpcContract,
   type IpcResult,
+  type ListRunEventsRequest,
   type ListWorkspaceEntriesRequest,
   type LaunchWorkspaceToolRequest,
   type WorkspaceTabState,
@@ -89,9 +90,8 @@ export const registerIpcHandlers = (services: IpcServices): void => {
   });
 
   handle(IPC_CHANNELS.runsEvents, (request) => {
-    assertRecord(request);
-    assertNonEmptyString(request.runId, 'runId');
-    return services.runs.events(request.runId);
+    assertListRunEventsRequest(request);
+    return services.runs.events(request.runId, request.kind, request.cursor ?? null, request.limit ?? 100);
   });
   handle(IPC_CHANNELS.runsBatchSteps, (request) => {
     assertRecord(request);
@@ -197,6 +197,13 @@ function assertListEntriesRequest(value: unknown): asserts value is ListWorkspac
   if (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 250) {
     throw new Error('limit must be an integer between 1 and 250.');
   }
+}
+
+function assertListRunEventsRequest(value: unknown): asserts value is ListRunEventsRequest {
+  assertRecord(value); assertNonEmptyString(value.runId, 'runId');
+  if (value.kind !== 'activity' && value.kind !== 'raw_protocol') throw new Error('Unsupported Run event kind.');
+  if (value.cursor !== undefined && value.cursor !== null && (typeof value.cursor !== 'number' || !Number.isInteger(value.cursor) || value.cursor < 0)) throw new Error('cursor must be a non-negative event sequence.');
+  if (value.limit !== undefined && (typeof value.limit !== 'number' || !Number.isInteger(value.limit) || value.limit < 1 || value.limit > 200)) throw new Error('limit must be an integer between 1 and 200.');
 }
 
 function assertCreateTaskInput(value: unknown): asserts value is CreatePlannerTaskInput {
