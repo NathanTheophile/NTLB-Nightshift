@@ -263,7 +263,7 @@ export class RunService implements RunServiceContract {
       return this.runs.setCandidatePublished(run.id, remote);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error); const run = this.runs.find(runId);
-      if (run?.candidateCommitSha) this.runs.setCandidatePublishFailure(runId, detail);
+      if (run && !isNoChangeCandidatePublishError(detail)) this.runs.setCandidatePublishFailure(runId, detail);
       throw error;
     }
   }
@@ -272,7 +272,7 @@ export class RunService implements RunServiceContract {
       await this.publishCandidate(runId);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      if (detail === 'Cannot publish a candidate for a Run with no changes.') {
+      if (isNoChangeCandidatePublishError(detail)) {
         this.runs.appendEvent(runId, 'candidate_publish_skipped', { state: 'not_applicable', reason: 'Delegated Leader Run completed without Git changes.' });
         return;
       }
@@ -368,4 +368,5 @@ const candidateBranchName = (runId: string, title: string): string => {
   return `nightshift/run/${runId}-${slug}`;
 };
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
+const isNoChangeCandidatePublishError = (detail: string): boolean => detail === 'Cannot publish a candidate for a Run with no changes.';
 const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;
