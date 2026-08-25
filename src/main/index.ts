@@ -24,6 +24,7 @@ import type { FccHealth } from './services/contracts/FccGateway';
 import { FccRuntimeManager } from './services/runtime/FccRuntimeManager';
 import { LocalFccGateway } from './services/runtime/LocalFccGateway';
 import { WorkerSessionService } from './services/WorkerSessionService';
+import { RunReviewService } from './services/RunReviewService';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
 let database: DatabaseService | undefined;
@@ -135,6 +136,7 @@ void app.whenReady().then(() => {
     new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
+  const reviewService = new RunReviewService(runs, workspaces);
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
@@ -149,6 +151,7 @@ void app.whenReady().then(() => {
       return { ...catalog, defaultAgentId: 'claude-code', defaultModelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b' };
     },
     runs: runService,
+    reviews: reviewService,
     workers: workerService,
     workerSelectionCatalog: async () => {
       const activeRuntime = runtime;
@@ -157,7 +160,7 @@ void app.whenReady().then(() => {
       await activeRuntime.agentRegistry.refresh();
       return activeRuntime.agentRegistry.workerCatalog(await activeRuntime.fccGateway.listModels());
     },
-    launcher: new LauncherService(settings, workspaces),
+    launcher: new LauncherService(settings, workspaces, reviewService),
   });
   runService.schedule();
 

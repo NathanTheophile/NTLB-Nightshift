@@ -16,4 +16,6 @@ export interface RunService {
   batchSteps(runId: string): BatchStep[];
   schedule(): void;
   requestCancellation(runId: string): Promise<Run>;
+  publishCandidate(runId: string): Promise<Run>;
+  createFollowUp(runId: string, prompt: string): Promise<Run>;
 }

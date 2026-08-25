@@ -1,4 +1,4 @@
-import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEvent, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
+import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEvent, RunFileDiff, RunReview, RunReviewExportKind, RunReviewExportResult, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
 
 export type WorkspaceEntryKind = 'directory' | 'file' | 'symlink';
 
@@ -81,7 +81,13 @@ export const IPC_CHANNELS = {
   runsList: 'runs:list',
   runsEvents: 'runs:events',
   runsBatchSteps: 'runs:batch-steps',
+  runsReview: 'runs:review',
+  runsFileDiff: 'runs:file-diff',
+  runsOpenWorktree: 'runs:open-worktree',
+  runsExportReview: 'runs:export-review',
   runsCancel: 'runs:cancel',
+  runsPublishCandidate: 'runs:publish-candidate',
+  runsCreateFollowUp: 'runs:create-follow-up',
   workersList: 'workers:list',
   workersCreate: 'workers:create',
   workersEvents: 'workers:events',
@@ -110,7 +116,13 @@ export interface IpcContract {
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
   [IPC_CHANNELS.runsEvents]: { request: { runId: string }; response: RunEvent[] };
   [IPC_CHANNELS.runsBatchSteps]: { request: { runId: string }; response: BatchStep[] };
+  [IPC_CHANNELS.runsReview]: { request: { runId: string }; response: RunReview };
+  [IPC_CHANNELS.runsFileDiff]: { request: { runId: string; path: string }; response: RunFileDiff };
+  [IPC_CHANNELS.runsOpenWorktree]: { request: { runId: string; tool: WorkspaceTool }; response: LaunchResult };
+  [IPC_CHANNELS.runsExportReview]: { request: { runId: string; kind: RunReviewExportKind }; response: RunReviewExportResult | null };
   [IPC_CHANNELS.runsCancel]: { request: { runId: string }; response: Run };
+  [IPC_CHANNELS.runsPublishCandidate]: { request: { runId: string }; response: Run };
+  [IPC_CHANNELS.runsCreateFollowUp]: { request: { runId: string; prompt: string }; response: Run };
   [IPC_CHANNELS.workersList]: { request: { workspaceId: string }; response: WorkerConversation[] };
   [IPC_CHANNELS.workersCreate]: { request: CreateWorkerInput; response: WorkerConversation };
   [IPC_CHANNELS.workersEvents]: { request: { workerId: string }; response: WorkerEvent[] };
@@ -149,7 +161,13 @@ export interface NightShiftApi {
     list: (workspaceId: string) => Promise<Run[]>;
     events: (runId: string) => Promise<RunEvent[]>;
     batchSteps: (runId: string) => Promise<BatchStep[]>;
+    review: (runId: string) => Promise<RunReview>;
+    fileDiff: (runId: string, path: string) => Promise<RunFileDiff>;
+    openWorktree: (runId: string, tool: WorkspaceTool) => Promise<LaunchResult>;
+    exportReview: (runId: string, kind: RunReviewExportKind) => Promise<RunReviewExportResult | null>;
     cancel: (runId: string) => Promise<Run>;
+    publishCandidate: (runId: string) => Promise<Run>;
+    createFollowUp: (runId: string, prompt: string) => Promise<Run>;
   };
   workers: {
     list: (workspaceId: string) => Promise<WorkerConversation[]>;

@@ -13,6 +13,7 @@ import type {
 import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
 import { createTerminalLaunchSpecs, type DetachedLaunchSpec } from './launcherSpecs';
+import type { RunReviewService } from './RunReviewService';
 
 interface IdeSetting {
   executablePath: string;
@@ -25,6 +26,7 @@ export class LauncherService {
   public constructor(
     private readonly settings: SettingsRepository,
     private readonly workspaces: WorkspaceRepository,
+    private readonly reviews?: RunReviewService,
   ) {}
 
   public getConfiguration(): LauncherConfiguration {
@@ -62,12 +64,21 @@ export class LauncherService {
       throw new Error('A valid workspace is required to launch a project tool.');
     }
 
+    return this.openPath(workspace.rootPath, tool, 'Workspace');
+  }
+
+  public async openRunWorktreeTool(runId: string, tool: WorkspaceTool): Promise<LaunchResult> {
+    if (!this.reviews) throw new Error('Run worktree launching is unavailable.');
+    return this.openPath(await this.reviews.resolveValidWorktree(runId), tool, 'Run worktree');
+  }
+
+  private async openPath(path: string, tool: WorkspaceTool, label: string): Promise<LaunchResult> {
     if (tool === 'explorer') {
-      const error = await shell.openPath(workspace.rootPath);
+      const error = await shell.openPath(path);
       if (error) {
         throw new Error(error);
       }
-      return { status: 'launched', message: 'Workspace opened in Explorer.' };
+      return { status: 'launched', message: `${label} opened in Explorer.` };
     }
 
     if (process.platform !== 'win32') {
@@ -75,8 +86,8 @@ export class LauncherService {
     }
 
     if (tool === 'terminal') {
-      await launchFirstAvailable(createTerminalLaunchSpecs(workspace.rootPath));
-      return { status: 'launched', message: 'Terminal opened at the workspace root.' };
+      await launchFirstAvailable(createTerminalLaunchSpecs(path));
+      return { status: 'launched', message: `Terminal opened at the ${label.toLowerCase()} root.` };
     }
 
     const ide = this.settings.get<IdeSetting>(ideSettingKey);
@@ -85,8 +96,8 @@ export class LauncherService {
     }
 
     await assertWindowsExecutable(ide.executablePath);
-    await launchDetached(ide.executablePath, [workspace.rootPath], workspace.rootPath);
-    return { status: 'launched', message: `Workspace opened in ${ide.displayName}.` };
+    await launchDetached(ide.executablePath, [path], path);
+    return { status: 'launched', message: `${label} opened in ${ide.displayName}.` };
   }
 }
 

@@ -38,7 +38,13 @@ const api: NightShiftApi = {
     list: (workspaceId) => invoke(IPC_CHANNELS.runsList, { workspaceId }),
     events: (runId) => invoke(IPC_CHANNELS.runsEvents, { runId }),
     batchSteps: (runId) => invoke(IPC_CHANNELS.runsBatchSteps, { runId }),
+    review: (runId) => invoke(IPC_CHANNELS.runsReview, { runId }),
+    fileDiff: (runId, path) => invoke(IPC_CHANNELS.runsFileDiff, { runId, path }),
+    openWorktree: (runId, tool) => invoke(IPC_CHANNELS.runsOpenWorktree, { runId, tool }),
+    exportReview: (runId, kind) => invoke(IPC_CHANNELS.runsExportReview, { runId, kind }),
     cancel: (runId) => invoke(IPC_CHANNELS.runsCancel, { runId }),
+    publishCandidate: (runId) => invoke(IPC_CHANNELS.runsPublishCandidate, { runId }),
+    createFollowUp: (runId, prompt) => invoke(IPC_CHANNELS.runsCreateFollowUp, { runId, prompt }),
   },
   workers: {
     list: (workspaceId) => invoke(IPC_CHANNELS.workersList, { workspaceId }),

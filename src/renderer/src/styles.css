@@ -592,7 +592,13 @@ textarea:focus-visible {
 .run-detail { min-width: 0; flex: 1; padding: 24px; overflow: auto; }
 .run-detail header { display: flex; align-items: center; justify-content: space-between; }
 .run-detail header > div { display: grid; gap: 8px; }
+.run-detail .run-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
 .run-detail header button { border: 1px solid #784c56; border-radius: 5px; background: transparent; color: #d3a8b5; padding: 6px 10px; cursor: pointer; }
+.run-actions, .run-exports, .run-tabs { display: flex; flex-wrap: wrap; gap: 7px; }
+.run-actions button, .run-exports button, .run-tabs button { border: 1px solid #55465f; border-radius: 5px; background: transparent; color: #c7b4d5; padding: 6px 9px; cursor: pointer; font-size: 11px; }
+.run-tabs { margin: 20px 0 16px; border-bottom: 1px solid #303033; padding-bottom: 9px; }.run-tabs .is-active { border-color: #a177c3; color: #edddfb; }
+.run-warning { padding: 8px; border-left: 2px solid #b48a42; background: #332c20; color: #d6bc85; font-size: 12px; }.run-detail h3 { margin: 22px 0 8px; color: #c9b5d8; font-size: 13px; }.run-exports { margin-top: 24px; }
+.run-change-grid { display: grid; grid-template-columns: minmax(220px, 38%) minmax(0, 1fr); gap: 12px; }.run-change-grid > div { display: grid; align-content: start; }.run-change-grid button { display: grid; padding: 8px; border: 0; border-bottom: 1px solid #303033; background: transparent; color: #cfc8d2; text-align: left; cursor: pointer; }.run-change-grid button.is-selected { background: rgba(139, 96, 186, .12); }.run-change-grid small { color: #817887; overflow-wrap: anywhere; }.run-change-grid pre { min-height: 340px; margin: 0; padding: 12px; overflow: auto; background: #17151a; color: #bdb4c3; font-size: 11px; white-space: pre-wrap; }
 .run-detail dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 9px 14px; margin: 24px 0; font-size: 12px; }
 .run-detail dt { color: #a177c3; }.run-detail dd { margin: 0; }
 .run-events { border-top: 1px solid #303033; padding-top: 12px; font-size: 11px; }.run-events p { color: #918894; overflow-wrap: anywhere; }.run-events time { color: #6b6470; }

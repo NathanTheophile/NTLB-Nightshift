@@ -59,6 +59,8 @@ export type RunStatus =
   | 'cancelled'
   | 'timed_out';
 
+export type CandidatePublishState = 'not_published' | 'publishing' | 'published' | 'failed';
+
 export interface Run {
   id: EntityId;
   taskId: EntityId;
@@ -67,6 +69,8 @@ export interface Run {
   resolvedModelId: EntityId;
   executionMode: PlannerExecutionMode;
   status: RunStatus;
+  sourceRunId: EntityId | null;
+  followUpPrompt: string | null;
   baseSha: string | null;
   worktreePath: string | null;
   startedAt: IsoTimestamp | null;
@@ -78,6 +82,12 @@ export interface Run {
   externalSessionId: string | null;
   finalHeadSha: string | null;
   finalGitState: string | null;
+  candidateBranchName: string | null;
+  candidateCommitSha: string | null;
+  candidateRemoteName: string | null;
+  candidatePublishState: CandidatePublishState;
+  candidatePublishedAt: IsoTimestamp | null;
+  candidateFailureReason: string | null;
   createdAt: IsoTimestamp;
 }
 
@@ -89,6 +99,41 @@ export interface RunEvent {
   eventType: string;
   payload: unknown;
 }
+
+export type RunChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'unknown';
+export interface RunChangedFile {
+  path: string;
+  previousPath: string | null;
+  kind: RunChangeKind;
+  staged: boolean;
+  unstaged: boolean;
+  isBinary: boolean;
+  sizeBytes: number | null;
+  diffAvailable: boolean;
+  note: string | null;
+}
+export interface RunFileDiff {
+  path: string;
+  content: string | null;
+  isBinary: boolean;
+  truncated: boolean;
+  note: string | null;
+}
+export interface RunReview {
+  run: Run;
+  worktreeHead: string | null;
+  gitStatus: string;
+  changedFiles: RunChangedFile[];
+  result: string | null;
+  failure: string | null;
+  validationStatus: string | null;
+  batchSteps: BatchStep[];
+  activity: RunEvent[];
+  rawProtocol: RunEvent[];
+  warnings: string[];
+}
+export type RunReviewExportKind = 'markdown' | 'json' | 'bundle';
+export interface RunReviewExportResult { path: string; kind: RunReviewExportKind; }
 
 export type WorkerStatus = 'idle' | 'starting' | 'active' | 'waiting_for_user' | 'terminated' | 'error';
 export type WorkerPermissionProfile = 'read_only' | 'workspace_write' | 'isolated_write';
