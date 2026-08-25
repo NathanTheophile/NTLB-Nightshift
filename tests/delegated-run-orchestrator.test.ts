@@ -37,6 +37,24 @@ describe('Delegated Leader autonomous correction', () => {
       db.close();
     } finally { await rm(root, { recursive: true, force: true, maxRetries: 3 }); }
   }, 15_000);
+
+  it('rejects DONE after failed validation and requests a corrective decision', async () => {
+    const fixture = await delegatedFixture(new CorrectionWorker(), new QueuedLeader([{ protocolVersion: 1, action: 'WORK', instruction: 'break', summary: 'start' }, { protocolVersion: 1, action: 'DONE', summary: 'incorrectly done' }, { protocolVersion: 1, action: 'BLOCKED', summary: 'cannot fix', blocker: 'needs input' }]));
+    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('blocked'); expect(fixture.leader.requests).toHaveLength(3); expect(fixture.leader.requests[2]!.evidence.priorAttemptSummaries).toContain('DONE is forbidden because validation did not pass. Return WORK or BLOCKED.'); }
+    finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('launches another fresh attempt when green validation receives WORK', async () => {
+    const fixture = await delegatedFixture(new FixedWorker(), new QueuedLeader([{ protocolVersion: 1, action: 'WORK', instruction: 'implement', summary: 'start' }, { protocolVersion: 1, action: 'WORK', instruction: 'inspect again', summary: 'continue' }, { protocolVersion: 1, action: 'DONE', summary: 'done' }]));
+    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('completed'); expect(fixture.runs.attempts(run.id)).toHaveLength(2); expect(fixture.worker.directories).toEqual([terminal.worktreePath, terminal.worktreePath]); }
+    finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('blocks after the bounded attempt budget without launching an extra Worker', async () => {
+    const fixture = await delegatedFixture(new FixedWorker(), new QueuedLeader(Array.from({ length: 5 }, (_, index) => ({ protocolVersion: 1 as const, action: 'WORK' as const, instruction: `attempt ${index}`, summary: 'continue' }))));
+    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toContain('attempt_budget_exhausted'); expect(fixture.runs.attempts(run.id)).toHaveLength(4); expect(fixture.worker.directories).toHaveLength(4); expect(terminal.worktreePath).toBeTruthy(); }
+    finally { await fixture.dispose(); }
+  }, 15_000);
 });
 
 class QueuedLeader implements LeaderClient { public readonly requests: LeaderRequest[] = []; public constructor(private readonly decisions: LeaderDecision[]) {} public resolveLuna(): Promise<ModelDescriptor> { return Promise.resolve(luna); } public decide(_model: string, request: LeaderRequest): Promise<LeaderDecision> { this.requests.push(request); const next = this.decisions.shift(); if (!next) throw new Error('Unexpected Leader request.'); return Promise.resolve(next); } }
@@ -45,4 +63,10 @@ class CorrectionWorker implements AgentAdapter {
   public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.directories.push(spec.workingDirectory); if (this.directories.length === 2) this.secondSawBroken = (await readFile(join(spec.workingDirectory, 'implementation.txt'), 'utf8')) === 'broken'; await writeFile(join(spec.workingDirectory, 'implementation.txt'), this.directories.length === 1 ? 'broken' : 'fixed'); const result: AgentExecutionResult = { handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }; return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve(result) }; }
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('Delegated attempts must use startRun.')); } public cancel(): Promise<void> { return Promise.resolve(); }
 }
+class FixedWorker extends CorrectionWorker { public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.directories.push(spec.workingDirectory); await writeFile(join(spec.workingDirectory, 'implementation.txt'), 'fixed'); const result: AgentExecutionResult = { handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }; return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve(result) }; } }
+const delegatedFixture = async (worker: CorrectionWorker, leader: QueuedLeader) => {
+  const root = await mkdtemp(join(tmpdir(), 'nightshift-delegated-cases-')); const repo = join(root, 'repo'); await exec('git', ['init', repo]); await exec('git', ['-C', repo, 'config', 'user.email', 'test@nightshift']); await exec('git', ['-C', repo, 'config', 'user.name', 'test']); await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { typecheck: "node -e \"process.exit(require('fs').readFileSync('implementation.txt','utf8').includes('fixed')?0:1)\"" } })); await writeFile(join(repo, 'implementation.txt'), 'base'); await exec('git', ['-C', repo, 'add', '.']); await exec('git', ['-C', repo, 'commit', '-m', 'base']); await exec('git', ['-C', repo, 'branch', '-M', 'dev']);
+  const db = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(db); const tasks = new PlannerTaskRepository(db); const runs = new RunRepository(db); const workspace = workspaces.addOrTouch(repo, 'repo', true); const supervisor = new WindowsProcessSupervisor(); const delegated = new DelegatedRunOrchestrator(runs, new ProjectValidationService(runs, supervisor), new RunReviewService(runs, workspaces), leader); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[worker.id, worker]]), { agentId: worker.id, modelId: 'model', timeoutMs: 10_000 }, supervisor, undefined, delegated);
+  return { runs, worker, leader, start: async () => { tasks.create({ workspaceId: workspace.id, prompt: 'Fixture task', requestedAgentId: worker.id, requestedModelId: 'model', priority: 1, executionMode: 'delegated_leader' }); service.schedule(); return waitFor(() => service.list(workspace.id)[0]); }, terminal: async (id: string) => waitFor(async () => { const run = await service.find(id); return run && ['completed', 'blocked', 'cancelled', 'timed_out'].includes(run.status) ? run : undefined; }, 10_000), dispose: async () => { db.close(); await rm(root, { recursive: true, force: true, maxRetries: 3 }); } };
+};
 const waitFor = async <T>(read: () => T | Promise<T>, timeout = 2_000): Promise<NonNullable<T>> => { const until = Date.now() + timeout; for (;;) { const value = await read(); if (value) return value; if (Date.now() >= until) throw new Error('Timed out waiting for delegated Run.'); await new Promise((resolve) => setTimeout(resolve, 10)); } };
