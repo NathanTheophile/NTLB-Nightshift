@@ -24,3 +24,7 @@ The application database is created under Electron's `userData` directory, never
 - `src/shared`: domain types and IPC contracts shared without duplicating models.
 
 FCC and coding-agent execution are intentionally represented by interfaces only in this bootstrap. No agent, model or AI response is simulated.
+
+## NightShift autonomy verified
+
+Delegated Leader mode can supervise multiple autonomous coding attempts in one isolated worktree, verifying end-to-end autonomy without interfering with the host workspace.
