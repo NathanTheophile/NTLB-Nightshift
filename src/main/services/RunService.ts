@@ -11,6 +11,7 @@ import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceR
 import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
 import { resolve } from 'node:path';
+import { devBaseKey } from './ReviewIntegrationService';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 
@@ -132,9 +133,7 @@ export class RunService implements RunServiceContract {
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
       const adapter = this.adapters.get(agentId); if (!adapter?.capabilities().plannerValidated) throw new Error(`Planner agent ${agentId} is not validated.`);
       if (adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
-      const head = run.sourceRunId
-        ? this.followUpBase(run.sourceRunId)
-        : await runGit(workspace.rootPath, ['rev-parse', '--verify', 'HEAD']);
+      const head = run.sourceRunId ? this.followUpBase(run.sourceRunId) : await this.plannerBase(workspace.rootPath, workspace.id);
       if (head.exitCode !== 0) throw new Error('Could not determine Git base for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       const worktree = await this.worktrees.createForRun({ runId: run.id, repositoryRoot: workspace.rootPath, baseSha: head.stdout.trim() });
@@ -315,6 +314,11 @@ export class RunService implements RunServiceContract {
   private async timeoutRun(runId: string, completion: Promise<unknown>): Promise<void> {
     this.runs.setStatus(runId, 'timed_out', { finished_at: new Date().toISOString(), failure_reason: 'Run exceeded the hard timeout.' }); this.runs.appendEvent(runId, 'timeout', {});
     const active = this.active.get(runId); if (active) { active.timedOut = true; await active.cancel(); await completion.catch(() => undefined); }
+  }
+  private async plannerBase(rootPath: string, workspaceId: string): Promise<GitCommandResult> {
+    const canonical = this.settings?.get<string>(devBaseKey(workspaceId));
+    if (canonical) { const resolved = await runGit(rootPath, ['rev-parse', '--verify', `${canonical}^{commit}`]); if (resolved.exitCode === 0) return resolved; }
+    return runGit(rootPath, ['rev-parse', '--verify', 'refs/heads/dev']);
   }
 }
 const taskStatus = (status: RunStatus): 'completed' | 'failed' | 'blocked' | 'cancelled' => status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'timed_out' ? 'failed' : status === 'failed' ? 'failed' : 'blocked';

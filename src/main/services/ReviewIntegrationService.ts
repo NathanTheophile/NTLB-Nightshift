@@ -1,88 +1,44 @@
-import { mkdir, readFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { RunIntegrationReview, ReviewerVerdict } from '@shared/domain/entities';
-import type { AgentAdapter } from './contracts/AgentAdapter';
-import { runGit, type GitCommand } from './GitWorktreeService';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
+import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import { RunIntegrationReviewRepository } from '../persistence/repositories/RunIntegrationReviewRepository';
+import type { AgentAdapter } from './contracts/AgentAdapter';
+import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
+import { runGit, type GitCommand } from './GitWorktreeService';
+import { RunReviewService } from './RunReviewService';
+import { WindowsProcessSupervisor } from './WindowsProcessSupervisor';
 
-export interface ReviewerRunner { review(input: { runId: string; workspaceId: string; candidateSha: string; targetDevSha: string; worktreePath: string; agentId: string; modelId: string; prompt: string }): Promise<string>; }
+export interface ReviewerRunner { review(input: { runId: string; workspaceId: string; candidateSha: string; targetDevSha: string; worktreePath: string; agentId: string; modelId: string; prompt: string; evidence: unknown }): Promise<string>; }
 export interface IntegrationValidator { validate(path: string): Promise<{ passed: boolean; evidence: string }>; }
-export class AdapterReviewerRunner implements ReviewerRunner {
-  public constructor(private readonly adapters: ReadonlyMap<string, AgentAdapter>) {}
-  public async review(input: Parameters<ReviewerRunner['review']>[0]): Promise<string> {
-    const adapter = this.adapters.get(input.agentId); if (!adapter) throw new Error(`Reviewer agent ${input.agentId} is unavailable.`);
-    const handle = await adapter.startRun({ runId: `review-${input.runId}-${randomUUID()}`, workspaceId: input.workspaceId, workingDirectory: input.worktreePath, modelId: input.modelId, prompt: input.prompt });
-    const result = await handle.completion; if (!result.succeeded) throw new Error(result.failureReason ?? 'Reviewer failed.');
-    return result.terminalEvent?.raw ?? '';
-  }
-}
+export const devBaseKey = (workspaceId: string): string => `nightshift.workspace.${workspaceId}.canonical_dev_sha`;
+export class AdapterReviewerRunner implements ReviewerRunner { public constructor(private readonly adapters: ReadonlyMap<string, AgentAdapter>) {} public async review(input: Parameters<ReviewerRunner['review']>[0]): Promise<string> { const adapter = this.adapters.get(input.agentId); if (!adapter) throw new Error(`Reviewer agent ${input.agentId} is unavailable.`); const handle = await adapter.startRun({ runId: `review-${input.runId}-${randomUUID()}`, workspaceId: input.workspaceId, workingDirectory: input.worktreePath, modelId: input.modelId, prompt: input.prompt }); const result = await handle.completion; if (!result.succeeded) throw new Error(result.failureReason ?? 'Reviewer failed.'); return result.terminalEvent?.raw ?? ''; } }
 
 export class ReviewIntegrationService {
-  public constructor(private readonly runs: RunRepository, private readonly workspaces: WorkspaceRepository, private readonly reviews: RunIntegrationReviewRepository, private readonly reviewer: ReviewerRunner, private readonly storageRoot: string, private readonly validator: IntegrationValidator = new PackageScriptValidator(), private readonly git: GitCommand = runGit) {}
-
+  public constructor(private readonly runs: RunRepository, private readonly workspaces: WorkspaceRepository, private readonly reviews: RunIntegrationReviewRepository, private readonly reviewer: ReviewerRunner, private readonly reviewReader: RunReviewService, private readonly storageRoot: string, private readonly settings?: SettingsRepository, private readonly validator: IntegrationValidator = new SupervisedIntegrationValidator(), private readonly git: GitCommand = runGit) {}
   public latest(runId: string): RunIntegrationReview | undefined { return this.reviews.latest(runId); }
   public async requestReview(runId: string): Promise<RunIntegrationReview> {
-    const run = this.runs.findRequired(runId); this.assertReviewGate(run);
-    const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) throw new Error('Review requires a Git workspace.');
-    const candidateSha = await this.commit(workspace.rootPath, run.candidateCommitSha!); const targetDevSha = await this.commit(workspace.rootPath, 'dev');
-    const reviewerPath = join(this.storageRoot, 'reviews', runId, randomUUID()); await mkdir(join(this.storageRoot, 'reviews', runId), { recursive: true });
-    await this.mustGit(workspace.rootPath, ['worktree', 'add', '--detach', reviewerPath, candidateSha], 'Could not create reviewer worktree.');
-    const source = await this.reviewer.review({ runId, workspaceId: run.workspaceId, candidateSha, targetDevSha, worktreePath: reviewerPath, agentId: run.resolvedAgentId, modelId: run.resolvedModelId, prompt: reviewerPrompt(candidateSha, targetDevSha) });
-    const candidateAfter = await this.commit(workspace.rootPath, candidateSha); const devAfter = await this.commit(workspace.rootPath, 'dev');
-    const parsed = parseVerdict(source);
-    const verdict: ReviewerVerdict = candidateAfter !== candidateSha || devAfter !== targetDevSha ? 'NEEDS_ATTENTION' : parsed?.verdict ?? 'NEEDS_ATTENTION';
-    const summary = candidateAfter !== candidateSha || devAfter !== targetDevSha ? 'Repository refs changed while the reviewer ran.' : parsed?.summary ?? 'Malformed reviewer verdict contract.';
-    const findings = candidateAfter !== candidateSha || devAfter !== targetDevSha ? `candidate=${candidateAfter}; dev=${devAfter}` : parsed?.findings ?? source.slice(0, 16 * 1024);
-    return this.reviews.create({ runId, candidateSha, targetDevSha, reviewerAgentId: run.resolvedAgentId, reviewerModelId: run.resolvedModelId, verdict, summary, findings });
+    const run = this.runs.findRequired(runId); this.gate(run); const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) throw new Error('Review requires a Git workspace.'); const candidateSha = await this.commit(workspace.rootPath, run.candidateCommitSha!); const targetDevSha = await this.commit(workspace.rootPath, 'dev'); const runEvidence = await this.reviewReader.automationEvidence(runId); const compared = await this.git(workspace.rootPath, ['diff', '--no-ext-diff', '--binary', '--find-renames', targetDevSha, candidateSha]); if (compared.exitCode !== 0) throw new Error('Could not build candidate-versus-dev review patch.'); const evidence = { ...runEvidence, candidatePatch: compared.stdout, candidateChangedFiles: (await this.git(workspace.rootPath, ['diff', '--name-status', '--find-renames', targetDevSha, candidateSha])).stdout }; const path = join(this.storageRoot, 'reviews', runId, randomUUID()); await mkdir(join(this.storageRoot, 'reviews', runId), { recursive: true }); await this.must(workspace.rootPath, ['worktree', 'add', '--detach', path, candidateSha], 'Could not create reviewer worktree.'); const before = await this.state(path); let raw = ''; let error: string | null = null; try { raw = await this.reviewer.review({ runId, workspaceId: run.workspaceId, candidateSha, targetDevSha, worktreePath: path, agentId: run.resolvedAgentId, modelId: run.resolvedModelId, prompt: prompt(candidateSha, targetDevSha, evidence), evidence }); } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); } const after = await this.state(path); const parsed = parse(raw); const unsafe = before.head !== after.head || before.status !== after.status || await this.commit(workspace.rootPath, candidateSha) !== candidateSha || await this.commit(workspace.rootPath, 'dev') !== targetDevSha; return this.reviews.create({ runId, candidateSha, targetDevSha, reviewerAgentId: run.resolvedAgentId, reviewerModelId: run.resolvedModelId, verdict: unsafe || error || !parsed ? 'NEEDS_ATTENTION' : parsed.verdict, summary: unsafe ? 'Reviewer or repository mutation detected.' : error ?? parsed?.summary ?? 'Malformed reviewer verdict contract.', findings: unsafe ? `before=${JSON.stringify(before)} after=${JSON.stringify(after)}` : parsed?.findings ?? raw.slice(0, 16 * 1024) });
   }
-  public async integrate(reviewId: string): Promise<RunIntegrationReview> {
-    const review = this.reviews.findRequired(reviewId); if (review.integrationStatus === 'integrated') return review;
-    if (review.verdict !== 'PASS') return this.reviews.setIntegration(reviewId, 'rejected', { failureReason: 'Only a PASS review can be integrated.' });
-    if (review.staleAt) return review;
-    const run = this.runs.findRequired(review.runId); const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) return this.reviews.setIntegration(reviewId, 'rejected', { failureReason: 'Git workspace is unavailable.' });
-    const currentCandidate = await this.commit(workspace.rootPath, run.candidateCommitSha ?? ''); const currentDev = await this.commit(workspace.rootPath, 'dev');
-    const remoteCandidate = run.candidateBranchName ? await this.remoteSha(workspace.rootPath, run.candidateRemoteName ?? 'origin', run.candidateBranchName) : null;
-    if (currentCandidate !== review.candidateSha || remoteCandidate !== review.candidateSha || currentDev !== review.targetDevSha) return this.reviews.markStale(reviewId, 'Candidate or dev no longer matches the reviewed SHA.');
-    const remote = run.candidateRemoteName ?? 'origin'; const remoteDev = await this.remoteSha(workspace.rootPath, remote, 'dev');
-    if (remoteDev !== review.targetDevSha) return this.reviews.markStale(reviewId, 'Remote dev moved since review.');
-    this.reviews.setIntegration(reviewId, 'integrating');
-    const integrationPath = join(this.storageRoot, 'integrations', reviewId); await mkdir(join(this.storageRoot, 'integrations'), { recursive: true });
-    try {
-      await this.mustGit(workspace.rootPath, ['worktree', 'add', '--detach', integrationPath, review.targetDevSha], 'Could not create integration worktree.');
-      const merged = await this.git(integrationPath, ['merge', '--no-ff', '--no-edit', review.candidateSha]);
-      if (merged.exitCode !== 0) return this.reviews.setIntegration(reviewId, 'needs_attention', { failureReason: `Merge conflict or failure: ${detail(merged)}` });
-      const validation = await this.validator.validate(integrationPath);
-      if (!validation.passed) return this.reviews.setIntegration(reviewId, 'needs_attention', { validation: validation.evidence, failureReason: 'Integrated-tree validation failed.' });
-      const beforePush = await this.remoteSha(workspace.rootPath, remote, 'dev');
-      if (beforePush !== review.targetDevSha) return this.reviews.markStale(reviewId, 'Remote dev moved before push.');
-      const mergedSha = await this.commit(integrationPath, 'HEAD'); const pushed = await this.git(integrationPath, ['push', remote, `HEAD:refs/heads/dev`]);
-      if (pushed.exitCode !== 0) return this.reviews.setIntegration(reviewId, 'needs_attention', { validation: validation.evidence, failureReason: `Push rejected: ${detail(pushed)}` });
-      return this.reviews.setIntegration(reviewId, 'integrated', { commitSha: mergedSha, validation: validation.evidence });
-    } catch (error) { return this.reviews.setIntegration(reviewId, 'needs_attention', { failureReason: error instanceof Error ? error.message : String(error) }); }
+  public async integrate(id: string): Promise<RunIntegrationReview> {
+    const review = this.reviews.findRequired(id); if (review.integrationStatus === 'integrated') return review; if (review.verdict !== 'PASS') return this.reviews.setIntegration(id, 'rejected', { failureReason: 'Only PASS reviews may integrate.' }); if (review.staleAt) return review; const run = this.runs.findRequired(review.runId); const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) return this.reviews.setIntegration(id, 'rejected', { failureReason: 'Git workspace is unavailable.' }); const remote = run.candidateRemoteName ?? 'origin'; const candidate = await this.commit(workspace.rootPath, run.candidateCommitSha ?? ''); const dev = await this.commit(workspace.rootPath, 'dev'); const remoteCandidate = run.candidateBranchName ? await this.remote(workspace.rootPath, remote, run.candidateBranchName) : null; if (candidate !== review.candidateSha || dev !== review.targetDevSha || remoteCandidate !== review.candidateSha || await this.remote(workspace.rootPath, remote, 'dev') !== review.targetDevSha) return this.reviews.markStale(id, 'Candidate or dev no longer matches the reviewed SHA.'); this.reviews.setIntegration(id, 'integrating'); const path = join(this.storageRoot, 'integrations', id); await mkdir(join(this.storageRoot, 'integrations'), { recursive: true }); try { await this.must(workspace.rootPath, ['worktree', 'add', '--detach', path, review.targetDevSha], 'Could not create integration worktree.'); const merged = await this.git(path, ['merge', '--no-ff', '--no-edit', review.candidateSha]); if (merged.exitCode !== 0) return this.reviews.setIntegration(id, 'needs_attention', { failureReason: `Merge conflict or failure: ${detail(merged)}` }); const validation = await this.validator.validate(path); if (!validation.passed) return this.reviews.setIntegration(id, 'needs_attention', { validation: validation.evidence, failureReason: 'Integrated-tree validation failed or timed out.' }); if (await this.remote(workspace.rootPath, remote, 'dev') !== review.targetDevSha) return this.reviews.markStale(id, 'Remote dev moved before push.'); const sha = await this.commit(path, 'HEAD'); const pushed = await this.git(path, ['push', remote, 'HEAD:refs/heads/dev']); if (pushed.exitCode !== 0) return this.reviews.setIntegration(id, 'needs_attention', { validation: validation.evidence, failureReason: `Push rejected: ${detail(pushed)}` }); this.settings?.set(devBaseKey(run.workspaceId), sha); return this.reviews.setIntegration(id, 'integrated', { commitSha: sha, validation: validation.evidence }); } catch (error) { return this.reviews.setIntegration(id, 'needs_attention', { failureReason: error instanceof Error ? error.message : String(error) }); }
   }
-  private assertReviewGate(run: ReturnType<RunRepository['findRequired']>): void { if (run.status !== 'completed' || run.candidatePublishState !== 'published' || !run.candidateCommitSha || run.validationStatus !== 'passed') throw new Error('Review requires a completed Run with a published candidate SHA and passed validation.'); }
-  private async commit(path: string, ref: string): Promise<string> { const result = await this.git(path, ['rev-parse', '--verify', `${ref}^{commit}`]); if (result.exitCode !== 0) throw new Error(`Commit ${ref} is unavailable.`); return result.stdout.trim(); }
-  private async remoteSha(path: string, remote: string, branch: string): Promise<string | null> { const result = await this.git(path, ['ls-remote', remote, `refs/heads/${branch}`]); if (result.exitCode !== 0) return null; return result.stdout.trim().split(/\s+/)[0] || null; }
-  private async mustGit(path: string, args: string[], message: string): Promise<void> { const result = await this.git(path, args); if (result.exitCode !== 0) throw new Error(`${message} ${detail(result)}`); }
+  private gate(run: ReturnType<RunRepository['findRequired']>): void { if (run.status !== 'completed' || run.candidatePublishState !== 'published' || !run.candidateCommitSha || run.validationStatus !== 'passed') throw new Error('Review requires a completed Run with a published candidate SHA and passed validation.'); }
+  private async commit(path: string, ref: string): Promise<string> { const value = await this.git(path, ['rev-parse', '--verify', `${ref}^{commit}`]); if (value.exitCode !== 0) throw new Error(`Commit ${ref} is unavailable.`); return value.stdout.trim(); }
+  private async remote(path: string, remote: string, branch: string): Promise<string | null> { const value = await this.git(path, ['ls-remote', remote, `refs/heads/${branch}`]); return value.exitCode === 0 ? value.stdout.trim().split(/\s+/)[0] || null : null; }
+  private async state(path: string): Promise<{ head: string; status: string }> { const [head, status] = await Promise.all([this.git(path, ['rev-parse', 'HEAD']), this.git(path, ['status', '--porcelain=v1', '--untracked-files=all'])]); return { head: head.stdout.trim(), status: status.stdout }; }
+  private async must(path: string, args: string[], message: string): Promise<void> { const value = await this.git(path, args); if (value.exitCode !== 0) throw new Error(`${message} ${detail(value)}`); }
 }
 
-class PackageScriptValidator implements IntegrationValidator {
-  public async validate(path: string): Promise<{ passed: boolean; evidence: string }> {
-    try {
-      const json = JSON.parse(await readFile(join(path, 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
-      const scripts = ['typecheck', 'lint', 'test', 'build'].filter((script) => typeof json.scripts?.[script] === 'string');
-      if (!scripts.length) return { passed: false, evidence: 'No deterministic validation scripts are configured.' };
-      const evidence: string[] = [];
-      for (const script of scripts) { const result = await npmRun(path, script); evidence.push(`$ npm run ${script}\n${result.output}`); if (result.exitCode !== 0) return { passed: false, evidence: evidence.join('\n') }; }
-      return { passed: true, evidence: evidence.join('\n') };
-    } catch { return { passed: false, evidence: 'No package.json is available for deterministic validation.' }; }
-  }
+class SupervisedIntegrationValidator implements IntegrationValidator {
+  public constructor(private readonly supervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly deadlineMs = 30 * 60_000) {}
+  public async validate(path: string): Promise<{ passed: boolean; evidence: string }> { try { const json = JSON.parse(await readFile(join(path, 'package.json'), 'utf8')) as { scripts?: Record<string, string> }; const scripts = ['typecheck', 'lint', 'test', 'build'].filter((item) => typeof json.scripts?.[item] === 'string'); if (!scripts.length) return { passed: false, evidence: 'No deterministic validation scripts are configured.' }; const lines: string[] = []; for (const script of scripts) { const value = await this.run(path, script); lines.push(`$ npm run ${script}\n${value.output}`); if (value.exitCode !== 0 || value.timeout) return { passed: false, evidence: lines.join('\n') }; } return { passed: true, evidence: lines.join('\n') }; } catch { return { passed: false, evidence: 'No package.json is available.' }; } }
+  private async run(path: string, script: string): Promise<{ exitCode: number | null; output: string; timeout: boolean }> { const id = `integration-validation-${randomUUID()}`; await this.supervisor.start({ executionId: id, executablePath: process.platform === 'win32' ? 'cmd.exe' : 'npm', arguments: process.platform === 'win32' ? ['/d', '/s', '/c', `npm run ${script}`] : ['run', script], workingDirectory: path, environment: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)) }); let timer: ReturnType<typeof setTimeout> | undefined; try { const complete = this.supervisor.waitForCompletion(id); const value = await Promise.race([complete, new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), this.deadlineMs); })]); if (value === 'timeout') { await this.supervisor.cancelOwnedTree(id); const stopped = await complete; return { exitCode: stopped.exitCode, output: bounded(stopped.stdout + stopped.stderr), timeout: true }; } return { exitCode: value.exitCode, output: bounded(value.stdout + value.stderr), timeout: false }; } finally { if (timer) clearTimeout(timer); } }
 }
-const npmRun = (cwd: string, script: string): Promise<{ exitCode: number | null; output: string }> => new Promise((resolve, reject) => { const child = spawn(process.platform === 'win32' ? 'cmd.exe' : 'npm', process.platform === 'win32' ? ['/d', '/s', '/c', `npm run ${script}`] : ['run', script], { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); let output = ''; child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { output += chunk; }); child.stderr.on('data', (chunk: string) => { output += chunk; }); child.once('error', reject); child.once('close', (exitCode) => resolve({ exitCode, output: output.slice(0, 64 * 1024) })); });
-const parseVerdict = (raw: string): { verdict: ReviewerVerdict; summary: string; findings: string } | undefined => { try { const value = JSON.parse(raw) as Record<string, unknown>; if ((value.verdict !== 'PASS' && value.verdict !== 'FAIL' && value.verdict !== 'NEEDS_ATTENTION') || typeof value.summary !== 'string' || typeof value.findings !== 'string') return undefined; return { verdict: value.verdict, summary: value.summary, findings: value.findings }; } catch { return undefined; } };
-const reviewerPrompt = (candidateSha: string, targetDevSha: string): string => `You are a read-only code reviewer in a disposable detached worktree. Never edit files, commit, merge, reset, checkout branches, push, or mutate Git refs. Review candidate ${candidateSha} against dev ${targetDevSha}, including available validation evidence. Reply with exactly one JSON object and nothing else: {"verdict":"PASS|FAIL|NEEDS_ATTENTION","summary":"...","findings":"..."}.`;
-const detail = (result: { stdout: string; stderr: string }): string => result.stderr.trim() || result.stdout.trim() || 'Git returned an error.';
+const bounded = (value: string): string => Buffer.byteLength(value) > 64 * 1024 ? Buffer.from(value).subarray(0, 64 * 1024).toString('utf8') : value;
+const parse = (raw: string): { verdict: ReviewerVerdict; summary: string; findings: string } | undefined => { try { const value = JSON.parse(raw) as Record<string, unknown>; return (value.verdict === 'PASS' || value.verdict === 'FAIL' || value.verdict === 'NEEDS_ATTENTION') && typeof value.summary === 'string' && typeof value.findings === 'string' ? { verdict: value.verdict, summary: value.summary, findings: value.findings } : undefined; } catch { return undefined; } };
+const prompt = (candidate: string, dev: string, evidence: unknown): string => `Read-only review. Do not edit files or run Git; deterministic evidence follows. Candidate ${candidate}; reviewed dev ${dev}. Reply with exactly one JSON object: {"verdict":"PASS|FAIL|NEEDS_ATTENTION","summary":"...","findings":"..."}.\nEVIDENCE:\n${JSON.stringify(evidence)}`;
+const detail = (value: { stdout: string; stderr: string }): string => value.stderr.trim() || value.stdout.trim() || 'Git returned an error.';

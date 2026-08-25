@@ -39,6 +39,10 @@ export class RunReviewService {
     review.changedFiles = await this.changedFiles(worktree, changes.stdout, untracked.stdout);
     return review;
   }
+  public async automationEvidence(runId: string): Promise<{ review: RunReview; patch: string }> {
+    const review = await this.inspect(runId);
+    return { review, patch: await this.fullPatch(review) };
+  }
 
   public async fileDiff(runId: string, path: string): Promise<RunFileDiff> {
     const review = await this.inspect(runId);

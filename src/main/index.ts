@@ -141,7 +141,7 @@ void app.whenReady().then(() => {
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
   const reviewService = new RunReviewService(runs, workspaces);
-  const reviewIntegration = new ReviewIntegrationService(runs, workspaces, new RunIntegrationReviewRepository(database), new AdapterReviewerRunner(new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]])), join(app.getPath('userData'), 'worktrees'));
+  const reviewIntegration = new ReviewIntegrationService(runs, workspaces, new RunIntegrationReviewRepository(database), new AdapterReviewerRunner(new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]])), reviewService, join(app.getPath('userData'), 'worktrees'), settings);
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
