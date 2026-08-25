@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ValidationStatus } from '@shared/domain/entities';
@@ -10,6 +10,7 @@ import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
 const PROFILE_ID = 'node-package-scripts-v1';
 const SCRIPT_ORDER = ['typecheck', 'lint', 'test', 'build'] as const;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+export const SOURCE_DEPENDENCIES_UNAVAILABLE = 'Workspace dependencies are unavailable. Install project dependencies in the source workspace before running autonomous validation.';
 
 interface PackageJson { scripts?: Record<string, unknown>; }
 interface ValidationCommand { script: string; command: string; }
@@ -58,6 +59,17 @@ export class ProjectValidationService {
     } finally { if (timer) clearTimeout(timer); options.onProcessFinished?.(); }
   }
 }
+
+export const assertNodeValidationDependencies = async (repositoryRoot: string): Promise<void> => {
+  if (!(await resolveCommands(repositoryRoot)).length) return;
+  try {
+    const dependencies = await lstat(join(repositoryRoot, 'node_modules'));
+    if (dependencies.isDirectory() && !dependencies.isSymbolicLink()) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  throw new Error(SOURCE_DEPENDENCIES_UNAVAILABLE);
+};
 
 const resolveCommands = async (worktreePath: string): Promise<ValidationCommand[]> => {
   try {

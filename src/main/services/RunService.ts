@@ -1,7 +1,7 @@
 import type { AgentAdapter, AgentExecutionResult } from './contracts/AgentAdapter';
 import type { RunService as RunServiceContract } from './contracts/RunService';
 import { runGit, type GitCommandResult } from './GitWorktreeService';
-import { ProjectValidationService } from './ProjectValidationService';
+import { assertNodeValidationDependencies, ProjectValidationService } from './ProjectValidationService';
 import { WindowsProcessSupervisor } from './WindowsProcessSupervisor';
 import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
 import type { WorktreeService } from './contracts/WorktreeService';
@@ -145,6 +145,7 @@ export class RunService implements RunServiceContract {
       const head = run.sourceRunId ? this.followUpBase(run.sourceRunId) : await this.plannerBase(workspace.rootPath, workspace.id);
       if (head.exitCode !== 0) throw new Error('Could not determine Git base for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
+      await assertNodeValidationDependencies(workspace.rootPath);
       const worktree = await this.worktrees.createForRun({ runId: run.id, repositoryRoot: workspace.rootPath, baseSha: head.stdout.trim() });
       this.runs.setPreparation(run.id, worktree.baseSha, worktree.path); this.runs.appendEvent(run.id, 'worktree_created', worktree);
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;

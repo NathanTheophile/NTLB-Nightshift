@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -29,7 +29,7 @@ describe('Delegated Leader autonomous correction', () => {
     const root = await mkdtemp(join(tmpdir(), 'nightshift-delegated-')); const repo = join(root, 'repo');
     try {
       await exec('git', ['init', repo]); await exec('git', ['-C', repo, 'config', 'user.email', 'test@nightshift']); await exec('git', ['-C', repo, 'config', 'user.name', 'test']);
-      await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { typecheck: "node -e \"process.exit(require('fs').readFileSync('implementation.txt','utf8').includes('fixed')?0:1)\"" } })); await writeFile(join(repo, 'implementation.txt'), 'base'); await exec('git', ['-C', repo, 'add', '.']); await exec('git', ['-C', repo, 'commit', '-m', 'base']); await exec('git', ['-C', repo, 'branch', '-M', 'dev']);
+      await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { typecheck: "node -e \"process.exit(require('fs').readFileSync('implementation.txt','utf8').includes('fixed')?0:1)\"" } })); await writeFile(join(repo, 'implementation.txt'), 'base'); await mkdir(join(repo, 'node_modules')); await exec('git', ['-C', repo, 'add', '.']); await exec('git', ['-C', repo, 'commit', '-m', 'base']); await exec('git', ['-C', repo, 'branch', '-M', 'dev']);
       const db = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(db); const tasks = new PlannerTaskRepository(db); const runs = new RunRepository(db); const workspace = workspaces.addOrTouch(repo, 'repo', true); const worker = new CorrectionWorker(); const leader = new QueuedLeader([{ protocolVersion: 1, action: 'WORK', instruction: 'implement', summary: 'start' }, { protocolVersion: 1, action: 'WORK', instruction: 'fix validation', summary: 'fix' }, { protocolVersion: 1, action: 'DONE', summary: 'validated' }]);
       const supervisor = new WindowsProcessSupervisor(); const delegated = new DelegatedRunOrchestrator(runs, new ProjectValidationService(runs, supervisor), new RunReviewService(runs, workspaces), leader); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[worker.id, worker]]), { agentId: worker.id, modelId: 'model', timeoutMs: 10_000 }, supervisor, undefined, delegated);
       tasks.create({ workspaceId: workspace.id, prompt: 'Fix implementation', requestedAgentId: worker.id, requestedModelId: 'model', priority: 1, executionMode: 'delegated_leader' }); service.schedule();
@@ -74,6 +74,14 @@ describe('Delegated Leader autonomous correction', () => {
       const run = await fixture.start(); const terminal = await fixture.terminal(run.id);
       expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toContain('FCC Luna catalog is unavailable.'); expect(fixture.worker.directories).toHaveLength(0);
       expect(fixture.runs.listEvents(run.id).some((event) => event.eventType === 'leader_request')).toBe(false);
+    } finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('blocks before Luna or a Worker when source Node dependencies are unavailable', async () => {
+    const fixture = await delegatedFixture(new FixedWorker(), new QueuedLeader([{ protocolVersion: 1, action: 'WORK', instruction: 'work', summary: 'start' }]), { sourceDependencies: false });
+    try {
+      const run = await fixture.start(); const terminal = await fixture.terminal(run.id);
+      expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toBe('Workspace dependencies are unavailable. Install project dependencies in the source workspace before running autonomous validation.'); expect(fixture.leader.requests).toHaveLength(0); expect(fixture.worker.directories).toHaveLength(0);
     } finally { await fixture.dispose(); }
   }, 15_000);
 
@@ -140,8 +148,9 @@ class UnavailableLeader implements LeaderClient {
   public decide(): Promise<LeaderDecision> { return Promise.reject(new Error('Leader preflight must complete before deciding.')); }
 }
 const unavailableHealth: FccHealth = { state: 'unavailable', available: false, endpoint: null, version: null, ownedByNightShift: false, detail: 'test', failureReason: null };
-const delegatedFixture = async <TLeader extends LeaderClient>(worker: CorrectionWorker, leader: TLeader, options: { timeoutMs?: number; validationScript?: string } = {}) => {
+const delegatedFixture = async <TLeader extends LeaderClient>(worker: CorrectionWorker, leader: TLeader, options: { timeoutMs?: number; validationScript?: string; sourceDependencies?: boolean } = {}) => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-delegated-cases-')); const repo = join(root, 'repo'); await exec('git', ['init', repo]); await exec('git', ['-C', repo, 'config', 'user.email', 'test@nightshift']); await exec('git', ['-C', repo, 'config', 'user.name', 'test']); await writeFile(join(repo, 'package.json'), JSON.stringify({ scripts: { typecheck: options.validationScript ?? "node -e \"process.exit(require('fs').readFileSync('implementation.txt','utf8').includes('fixed')?0:1)\"" } })); await writeFile(join(repo, 'implementation.txt'), 'base'); await exec('git', ['-C', repo, 'add', '.']); await exec('git', ['-C', repo, 'commit', '-m', 'base']); await exec('git', ['-C', repo, 'branch', '-M', 'dev']);
+  if (options.sourceDependencies !== false) await mkdir(join(repo, 'node_modules'));
   const db = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(db); const tasks = new PlannerTaskRepository(db); const runs = new RunRepository(db); const workspace = workspaces.addOrTouch(repo, 'repo', true); const supervisor = new WindowsProcessSupervisor(); const delegated = new DelegatedRunOrchestrator(runs, new ProjectValidationService(runs, supervisor), new RunReviewService(runs, workspaces), leader); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[worker.id, worker]]), { agentId: worker.id, modelId: 'model', timeoutMs: options.timeoutMs ?? 10_000 }, supervisor, undefined, delegated);
   return { runs, worker, leader, service, start: async () => { tasks.create({ workspaceId: workspace.id, prompt: 'Fixture task', requestedAgentId: worker.id, requestedModelId: 'model', priority: 1, executionMode: 'delegated_leader' }); service.schedule(); return waitFor(() => service.list(workspace.id)[0]); }, terminal: async (id: string) => waitFor(async () => { const run = await service.find(id); return run && ['completed', 'blocked', 'cancelled', 'timed_out'].includes(run.status) ? run : undefined; }, 10_000), dispose: async () => { db.close(); await rm(root, { recursive: true, force: true, maxRetries: 3 }); } };
 };

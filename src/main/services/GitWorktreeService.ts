@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { lstat, mkdir, symlink, unlink } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 
 import type { WorktreeHandle, WorktreeService, WorktreeSpec } from './contracts/WorktreeService';
@@ -23,6 +23,7 @@ export class GitWorktreeService implements WorktreeService {
     await mkdir(this.storageRoot, { recursive: true });
     const result = await this.git(repositoryRoot, ['worktree', 'add', '--detach', path, baseResult.stdout.trim()]);
     if (result.exitCode !== 0) throw new Error(`Could not create isolated worktree: ${result.stderr.trim() || result.stdout.trim()}`);
+    await linkSourceDependencies(repositoryRoot, path);
     return { path, baseSha: baseResult.stdout.trim(), branchName };
   }
 
@@ -33,10 +34,39 @@ export class GitWorktreeService implements WorktreeService {
   }
 
   public async removeAfterEvidencePersisted(path: string): Promise<void> {
-    const result = await this.git(path, ['worktree', 'remove', '--force', path]);
+    await removeDependencyJunction(path);
+    const commonDirectory = await this.git(path, ['rev-parse', '--git-common-dir']);
+    if (commonDirectory.exitCode !== 0) throw new Error('Could not determine the source repository for this worktree.');
+    const repositoryRoot = resolve(path, commonDirectory.stdout.trim(), '..');
+    const result = await this.git(repositoryRoot, ['worktree', 'remove', '--force', path]);
     if (result.exitCode !== 0) throw new Error(`Could not remove worktree: ${result.stderr.trim() || result.stdout.trim()}`);
   }
 }
+
+const linkSourceDependencies = async (repositoryRoot: string, worktreePath: string): Promise<void> => {
+  const source = join(repositoryRoot, 'node_modules');
+  if (!await isRealDirectory(source)) return;
+
+  const destination = join(worktreePath, 'node_modules');
+  if (await pathExists(destination)) throw new Error('Could not link workspace dependencies because the worktree already contains node_modules.');
+  await symlink(source, destination, 'junction');
+};
+
+const removeDependencyJunction = async (worktreePath: string): Promise<void> => {
+  const destination = join(worktreePath, 'node_modules');
+  let entry;
+  try { entry = await lstat(destination); } catch (error) { if (isMissing(error)) return; throw error; }
+  if (!entry.isSymbolicLink()) throw new Error('Refusing to remove worktree because node_modules is not a dependency junction.');
+  await unlink(destination);
+};
+
+const isRealDirectory = async (path: string): Promise<boolean> => {
+  try { const entry = await lstat(path); return entry.isDirectory() && !entry.isSymbolicLink(); } catch (error) { if (isMissing(error)) return false; throw error; }
+};
+const pathExists = async (path: string): Promise<boolean> => {
+  try { await lstat(path); return true; } catch (error) { if (isMissing(error)) return false; throw error; }
+};
+const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === 'ENOENT';
 
 export const runGit: GitCommand = (repositoryRoot, argumentsList) => new Promise((resolvePromise, reject) => {
   const child = spawn('git', ['-C', repositoryRoot, ...argumentsList], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
