@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 
-import type { AgentCapabilities, AgentDescriptor } from '@shared/domain/entities';
+import type { AgentCapabilities, AgentDescriptor, PlannerExecutionMode } from '@shared/domain/entities';
 
 import type {
   AgentAdapter,
@@ -16,6 +16,7 @@ import type { ProcessSupervisor, SupervisedProcessEvent, SupervisedProcessOutput
 import { discoverExecutable } from '../runtime/executableDiscovery';
 import { buildClaudeRunArguments, buildClaudeWorkerArguments } from './claude/claudeCommand';
 import { ClaudeStreamJsonParser, type ClaudeStreamEvent } from './claude/ClaudeStreamJsonParser';
+import { satisfiesExecutionModeRequirements } from '../PlannerExecutionCompatibility';
 
 const adapterId = 'claude-code';
 const launcherCommand = 'fcc-claude';
@@ -65,6 +66,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       imageInput: false,
       subagents: false,
       plannerValidated: true,
+      delegatedValidated: true,
       workerValidated: true,
       renderMode: 'structured',
     };
@@ -76,6 +78,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   public supportsWorkerModel(modelId: string): boolean {
     return validatedWorkerModels.has(modelId);
+  }
+
+  public supportsExecutionMode(executionMode: PlannerExecutionMode): boolean {
+    return satisfiesExecutionModeRequirements(this.capabilities(), executionMode);
+  }
+
+  public supportsModelForExecutionMode(executionMode: PlannerExecutionMode, modelId: string): boolean {
+    return executionMode === 'delegated_leader' ? validatedWorkerModels.has(modelId) : validatedPlannerModels.has(modelId);
   }
 
   public async detect(): Promise<AgentDescriptor> {

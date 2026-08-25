@@ -10,7 +10,7 @@ import type { AgentAdapter, AgentExecutionHandle, AgentExecutionResult, AgentPro
 import type { WorktreeHandle, WorktreeService, WorktreeSpec } from '../src/main/services/contracts/WorktreeService';
 import type { AgentCapabilities, AgentDescriptor } from '../src/shared/domain/entities';
 
-const capabilities: AgentCapabilities = { interactive: true, headless: true, structuredEvents: true, rawPty: false, resume: true, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: true, renderMode: 'structured' };
+const capabilities: AgentCapabilities = { interactive: true, headless: true, structuredEvents: true, rawPty: false, resume: true, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, delegatedValidated: true, workerValidated: true, renderMode: 'structured' };
 
 describe('WorkerSessionService', () => {
   it('persists locked configuration, ordered structured history, and session continuation across service restart', async () => {
@@ -65,6 +65,8 @@ class WorkerAdapter implements AgentAdapter {
   public readonly id = 'claude-code'; public readonly specs: WorkerStartSpec[] = []; public readonly handleId = randomUUID(); public readonly cancelled: string[] = []; private resolve?: () => void;
   public constructor(private readonly pending = false) {}
   public capabilities = (): AgentCapabilities => capabilities;
+  public supportsExecutionMode = (): boolean => true;
+  public supportsModelForExecutionMode = (): boolean => true;
   public supportsWorkerModel = (modelId: string): boolean => modelId === 'model';
   public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Claude Code', fccLauncher: 'fcc-claude', installed: true, launchable: true, version: 'test', capabilities, lastValidatedAt: null });
   public startRun(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('unused')); }

@@ -1,4 +1,4 @@
-import type { AgentCapabilities, AgentDescriptor, IsolationMode, WorkerPermissionProfile } from '@shared/domain/entities';
+import type { AgentCapabilities, AgentDescriptor, IsolationMode, PlannerExecutionMode, WorkerPermissionProfile } from '@shared/domain/entities';
 
 export interface RunStartSpec {
   runId: string;
@@ -58,6 +58,8 @@ export interface AgentAdapter {
   startWorker(spec: WorkerStartSpec): Promise<AgentExecutionHandle>;
   startRun(spec: RunStartSpec): Promise<AgentExecutionHandle>;
   cancel(handleId: string): Promise<void>;
+  supportsExecutionMode(executionMode: PlannerExecutionMode): boolean;
+  supportsModelForExecutionMode(executionMode: PlannerExecutionMode, modelId: string): boolean;
   /** Explicit compatibility evidence for unattended Planner execution. */
   supportsPlannerModel?(modelId: string): boolean;
   /** Explicit compatibility evidence for structured Worker execution. */

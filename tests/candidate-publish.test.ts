@@ -16,7 +16,7 @@ import type { AgentAdapter, AgentExecutionHandle, RunStartSpec } from '../src/ma
 import type { AgentCapabilities, AgentDescriptor } from '../src/shared/domain/entities';
 
 const exec = promisify(execFile);
-const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
+const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, delegatedValidated: true, workerValidated: false, renderMode: 'structured' };
 
 describe('candidate publishing and follow-up runs', () => {
   it('commits tracked and untracked changes once, pushes only its candidate branch, and rejects no-change Runs', async () => {
@@ -100,6 +100,7 @@ const setup = async () => {
 
 class FollowUpAdapter implements AgentAdapter {
   public readonly id = 'test-agent'; public starts = 0; public capabilities = (): AgentCapabilities => capabilities;
+  public supportsExecutionMode = (): boolean => true; public supportsModelForExecutionMode = (): boolean => true;
   public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
   public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; await writeFile(join(spec.workingDirectory, 'follow-up.txt'), 'fresh invocation\n'); return { handleId: 'follow-up', externalSessionId: 'fresh-session', events: [], completion: Promise.resolve({ handleId: 'follow-up', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'fresh-session', events: [], terminalEvent: null, stderr: '' }) }; }
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('not used')); }

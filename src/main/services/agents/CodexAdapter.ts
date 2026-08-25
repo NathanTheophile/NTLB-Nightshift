@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 
-import type { AgentCapabilities, AgentDescriptor } from '@shared/domain/entities';
+import type { AgentCapabilities, AgentDescriptor, PlannerExecutionMode } from '@shared/domain/entities';
 
 import type { AgentAdapter, AgentExecutionHandle, AgentExecutionResult, AgentProtocolEvent, RunStartSpec, WorkerStartSpec } from '../contracts/AgentAdapter';
 import type { FccGateway } from '../contracts/FccGateway';
@@ -9,6 +9,7 @@ import type { ProcessSupervisor, SupervisedProcessEvent, SupervisedProcessOutput
 import { discoverExecutable } from '../runtime/executableDiscovery';
 import { buildCodexRunArguments } from './codex/codexCommand';
 import { CodexJsonlParser, type CodexJsonlEvent } from './codex/CodexJsonlParser';
+import { satisfiesExecutionModeRequirements } from '../PlannerExecutionCompatibility';
 
 const adapterId = 'codex';
 const launcherCommand = 'fcc-codex';
@@ -37,10 +38,14 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   public capabilities(): AgentCapabilities {
-    return { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
+    return { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, delegatedValidated: true, workerValidated: false, renderMode: 'structured' };
   }
 
   public supportsPlannerModel(modelId: string): boolean { return validatedPlannerModels.has(modelId); }
+  public supportsExecutionMode(executionMode: PlannerExecutionMode): boolean { return satisfiesExecutionModeRequirements(this.capabilities(), executionMode); }
+  public supportsModelForExecutionMode(executionMode: PlannerExecutionMode, modelId: string): boolean {
+    return (executionMode === 'single_agent' || executionMode === 'sequential_batch' || executionMode === 'delegated_leader') && validatedPlannerModels.has(modelId);
+  }
 
   public async detect(): Promise<AgentDescriptor> {
     const executablePath = await this.discoverLauncher();
@@ -59,7 +64,7 @@ export class CodexAdapter implements AgentAdapter {
   public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
     const runtime = await this.gateway.ensureAvailable();
     if (!runtime.available) throw new Error(runtime.failureReason ?? 'FCC is unavailable.');
-    if (!this.supportsPlannerModel(spec.modelId)) throw new Error(`Codex Planner model is not validated: ${spec.modelId}`);
+    if (!validatedPlannerModels.has(spec.modelId)) throw new Error(`Codex coding model is not validated: ${spec.modelId}`);
     const executablePath = await this.discoverLauncher();
     if (!executablePath) throw new Error('fcc-codex was not found on PATH.');
     if (!(await stat(spec.workingDirectory)).isDirectory()) throw new Error('Codex working directory must be an existing directory.');

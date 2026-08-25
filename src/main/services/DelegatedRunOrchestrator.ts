@@ -4,6 +4,7 @@ import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { ProjectValidationService } from './ProjectValidationService';
 import type { RunReviewService } from './RunReviewService';
 import type { LeaderClient, LeaderDecision, LeaderRequest } from './DelegatedLeaderClient';
+import { supportsExecutionSelection } from './PlannerExecutionCompatibility';
 
 const MAX_ATTEMPTS = 4;
 const cap = (value: string, bytes: number): { value: string; truncated: boolean } => Buffer.byteLength(value) <= bytes ? { value, truncated: false } : { value: Buffer.from(value).subarray(0, bytes).toString('utf8'), truncated: true };
@@ -13,7 +14,7 @@ export class DelegatedRunOrchestrator {
 
   public async execute(spec: { run: Run; task: PlannerTask; worktreePath: string; adapter: AgentAdapter; deadline: number; isCancellationRequested: () => boolean; setActive: (cancel: () => Promise<void>) => void; clearActive: () => void }): Promise<RunStatus> {
     const { run, adapter } = spec;
-    if (!adapter.capabilities().workerValidated || !adapter.supportsWorkerModel?.(run.resolvedModelId)) throw new Error(`Delegated Worker ${run.resolvedAgentId}/${run.resolvedModelId} is not validated.`);
+    if (!supportsExecutionSelection(adapter, 'delegated_leader', run.resolvedModelId)) throw new Error(`Delegated Worker ${run.resolvedAgentId}/${run.resolvedModelId} is not validated.`);
     const luna = await this.leader.resolveLuna(); if (spec.isCancellationRequested()) return 'cancelled'; if (Date.now() >= spec.deadline) return 'timed_out'; this.runs.setDelegatedMetadata(run.id, luna.id, MAX_ATTEMPTS, 'planning'); this.runs.appendEvent(run.id, 'leader_resolution', { modelId: luna.id });
     let decision = await this.decide(spec, luna.id, 'initial', 0, null, 'not_configured');
     for (let index = 0; index < MAX_ATTEMPTS; index += 1) {

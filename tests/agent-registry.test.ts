@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { AgentRegistry } from '../src/main/services/AgentRegistry';
 import { ClaudeCodeAdapter } from '../src/main/services/agents/ClaudeCodeAdapter';
+import { CodexAdapter } from '../src/main/services/agents/CodexAdapter';
 import type { AgentAdapter } from '../src/main/services/contracts/AgentAdapter';
 import type { FccGateway } from '../src/main/services/contracts/FccGateway';
 import type { ProcessSupervisor } from '../src/main/services/contracts/ProcessSupervisor';
 import type { AgentCapabilities } from '../src/shared/domain/entities';
 
-const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
-const adapter = (id: string, launchable: boolean): AgentAdapter => ({ id, capabilities: () => capabilities, detect: () => Promise.resolve({ id, displayName: id, fccLauncher: `fcc-${id}`, installed: true, launchable, version: '5.14.2', capabilities, lastValidatedAt: null }), startRun: () => Promise.reject(new Error('unused')), startWorker: () => Promise.reject(new Error('unused')), cancel: () => Promise.resolve(), supportsPlannerModel: (model) => model === 'model' });
+const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, delegatedValidated: true, workerValidated: false, renderMode: 'structured' };
+const adapter = (id: string, launchable: boolean): AgentAdapter => ({ id, capabilities: () => capabilities, detect: () => Promise.resolve({ id, displayName: id, fccLauncher: `fcc-${id}`, installed: true, launchable, version: '5.14.2', capabilities, lastValidatedAt: null }), startRun: () => Promise.reject(new Error('unused')), startWorker: () => Promise.reject(new Error('unused')), cancel: () => Promise.resolve(), supportsExecutionMode: () => true, supportsModelForExecutionMode: (_mode, model) => model === 'model', supportsPlannerModel: (model) => model === 'model' });
 
 describe('AgentRegistry', () => {
   it('exposes only launchable detected adapters and explicit compatible models', async () => {
@@ -27,17 +28,23 @@ describe('AgentRegistry', () => {
     expect(catalog.modelsByAgent['claude-code']?.map(({ id }) => id)).toEqual(['model']);
   });
 
-  it('keeps Luna Worker-only while preserving Nemotron in both validated catalogs', async () => {
-    const registry = new AgentRegistry([new ClaudeCodeAdapter(noopSupervisor, healthyGateway, { discoverLauncher: () => Promise.resolve('fcc-claude') })]);
+  it('derives delegated compatibility without requiring interactive Worker sessions', async () => {
+    const codex = new CodexAdapter(noopSupervisor, healthyGateway, { discoverLauncher: () => Promise.resolve('fcc-codex') });
+    const registry = new AgentRegistry([new ClaudeCodeAdapter(noopSupervisor, healthyGateway, { discoverLauncher: () => Promise.resolve('fcc-claude') }), codex]);
     await registry.refresh();
-    const models = [model('nvidia_nim/nvidia/nemotron-3-super-120b-a12b'), model('openai/gpt-5.6-luna')];
+    const models = [model('nvidia_nim/nvidia/nemotron-3-super-120b-a12b'), model('openai/gpt-5.6-luna'), model('openai/gpt-5.6')];
 
     expect(registry.catalogForExecutionMode('single_agent', models).modelsByAgent['claude-code']?.map(({ id }) => id))
       .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
     expect(registry.catalogForExecutionMode('sequential_batch', models).modelsByAgent['claude-code']?.map(({ id }) => id))
       .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
-    expect(registry.catalogForExecutionMode('delegated_leader', models).modelsByAgent['claude-code']?.map(({ id }) => id))
+    const delegated = registry.catalogForExecutionMode('delegated_leader', models);
+    expect(delegated.agents.map(({ id }) => id)).toEqual(['claude-code', 'codex']);
+    expect(codex.capabilities().interactive).toBe(false);
+    expect(delegated.modelsByAgent['claude-code']?.map(({ id }) => id))
       .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-5.6-luna']);
+    expect(delegated.modelsByAgent.codex?.map(({ id }) => id))
+      .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
   });
 });
 
