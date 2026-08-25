@@ -236,12 +236,12 @@ class TimeoutThenCompleteAdapter extends CompletingAdapter {
 }
 class ControlledAdapter extends CompletingAdapter {
   private readonly completions: Array<(result: AgentExecutionResult) => void> = [];
-  public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+  public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
     this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
     let resolveCompletion!: (result: AgentExecutionResult) => void;
     const completion = new Promise<AgentExecutionResult>((resolve) => { resolveCompletion = resolve; });
     this.completions.push(resolveCompletion);
-    return { handleId: randomUUID(), externalSessionId: null, events: [], completion };
+    return Promise.resolve({ handleId: randomUUID(), externalSessionId: null, events: [], completion });
   }
   public completeNext(): void { this.completions.shift()?.(completedResult()); }
   public completeAll(): void { while (this.completions.length) this.completeNext(); }

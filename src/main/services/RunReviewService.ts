@@ -28,15 +28,16 @@ export class RunReviewService {
     }
     const base = await git(worktree, ['rev-parse', '--verify', `${run.baseSha}^{commit}`]);
     if (base.exitCode !== 0) { review.warnings.push(`Recorded base ${run.baseSha} is unavailable in this worktree.`); return review; }
-    const [head, status, changes, untracked] = await Promise.all([
+    const [head, status, changes, numstat, untracked] = await Promise.all([
       git(worktree, ['rev-parse', '--verify', 'HEAD']),
       git(worktree, ['status', '--porcelain=v1']),
       git(worktree, ['diff', '--name-status', '--find-renames', run.baseSha]),
+      git(worktree, ['diff', '--numstat', '--find-renames', run.baseSha]),
       git(worktree, ['ls-files', '--others', '--exclude-standard', '-z']),
     ]);
     review.worktreeHead = head.exitCode === 0 ? head.stdout.trim() : null;
     review.gitStatus = status.stdout;
-    review.changedFiles = await this.changedFiles(worktree, changes.stdout, untracked.stdout);
+    review.changedFiles = await this.changedFiles(worktree, changes.stdout, numstat.stdout, untracked.stdout);
     return review;
   }
   public async automationEvidence(runId: string): Promise<{ review: RunReview; patch: string }> {
@@ -77,8 +78,14 @@ export class RunReviewService {
     return worktree;
   }
 
-  private async changedFiles(worktree: string, changes: string, untracked: string): Promise<RunChangedFile[]> {
+  private async changedFiles(worktree: string, changes: string, numstat: string, untracked: string): Promise<RunChangedFile[]> {
     const result = new Map<string, RunChangedFile>();
+    const counts = new Map<string, { additions: number | null; deletions: number | null }>();
+    for (const line of numstat.split(/\r?\n/)) {
+      const [added, deleted, path, renamedPath] = line.split('\t');
+      const finalPath = renamedPath ?? path;
+      if (finalPath) counts.set(finalPath, { additions: added === '-' ? null : Number(added), deletions: deleted === '-' ? null : Number(deleted) });
+    }
     for (const line of changes.split(/\r?\n/)) {
       if (!line) continue;
       const [code, path, renamedPath] = line.split('\t'); if (!code || !path) continue;
@@ -86,10 +93,10 @@ export class RunReviewService {
       const previousPath = kind === 'renamed' ? path : null;
       const finalPath = kind === 'renamed' ? renamedPath : path;
       if (!finalPath) continue;
-      result.set(finalPath, await fileInfo(worktree, finalPath, { path: finalPath, previousPath, kind, staged: false, unstaged: true }));
+      result.set(finalPath, await fileInfo(worktree, finalPath, { path: finalPath, previousPath, kind, staged: false, unstaged: true, ...(counts.get(finalPath) ?? { additions: null, deletions: null }) }));
     }
     for (const path of untracked.split('\0')) {
-      if (!path) continue; result.set(path, await fileInfo(worktree, path, { path, previousPath: null, kind: 'untracked', staged: false, unstaged: true }));
+      if (!path) continue; result.set(path, await fileInfo(worktree, path, { path, previousPath: null, kind: 'untracked', staged: false, unstaged: true, additions: null, deletions: null }));
     }
     return [...result.values()].sort((left, right) => left.path.localeCompare(right.path));
   }
@@ -171,7 +178,7 @@ export class RunReviewService {
   }
 }
 
-const fileInfo = async (root: string, path: string, values: Pick<RunChangedFile, 'path' | 'previousPath' | 'kind' | 'staged' | 'unstaged'>): Promise<RunChangedFile> => {
+const fileInfo = async (root: string, path: string, values: Pick<RunChangedFile, 'path' | 'previousPath' | 'kind' | 'staged' | 'unstaged' | 'additions' | 'deletions'>): Promise<RunChangedFile> => {
   const target = safeChild(root, path); if (!target) return { ...values, isBinary: false, sizeBytes: null, diffAvailable: false, note: 'Unsafe path rejected.' };
   try { const source = await safeRegularFile(root, path); if (!source) return { ...values, isBinary: false, sizeBytes: null, diffAvailable: false, note: 'Directory or symlink content is not included.' }; const info = await stat(source); const data = await readPrefix(source, Math.min(info.size, MAX_BINARY_PROBE_BYTES)); return { ...values, isBinary: isBinary(data), sizeBytes: info.size, diffAvailable: info.size <= MAX_DIFF_BYTES, note: info.size > MAX_DIFF_BYTES ? 'File exceeds the 512 KiB diff limit.' : null }; }
   catch { return { ...values, isBinary: false, sizeBytes: null, diffAvailable: true, note: values.kind === 'deleted' ? null : 'File is unavailable.' }; }

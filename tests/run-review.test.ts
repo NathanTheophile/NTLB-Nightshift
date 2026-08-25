@@ -23,6 +23,8 @@ describe('RunReviewService', () => {
       await writeFile(join(fixture.repository, 'after.txt'), 'main moved\n'); await exec('git', ['-C', fixture.repository, 'add', '.']); await exec('git', ['-C', fixture.repository, 'commit', '-m', 'move main']);
       const review = await fixture.service.inspect(fixture.run.id);
       expect(review.changedFiles.map((file) => file.kind)).toEqual(expect.arrayContaining(['modified', 'deleted', 'renamed', 'untracked'])); expect(review.changedFiles.find((file) => file.kind === 'renamed')?.previousPath).toBeTruthy();
+      expect(review.changedFiles.find((file) => file.path === 'modified.txt')).toMatchObject({ additions: 1, deletions: 1 });
+      expect(review.changedFiles.find((file) => file.path === 'new.txt')).toMatchObject({ additions: null, deletions: null });
       expect((await fixture.service.fileDiff(fixture.run.id, 'modified.txt')).content).toContain('-base');
       expect((await fixture.service.fileDiff(fixture.run.id, 'new.txt')).content).toContain('+++ b/new.txt');
       expect(review.batchSteps.map((step) => step.prompt)).toEqual(['First evidence']);

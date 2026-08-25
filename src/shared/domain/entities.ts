@@ -153,6 +153,8 @@ export interface RunChangedFile {
   sizeBytes: number | null;
   diffAvailable: boolean;
   note: string | null;
+  additions: number | null;
+  deletions: number | null;
 }
 export interface RunFileDiff {
   path: string;

@@ -96,6 +96,11 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertNonEmptyString(request.workspaceId, 'workspaceId');
     return services.runs.list(request.workspaceId);
   });
+  handle(IPC_CHANNELS.runsNavigation, (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.workspaceId, 'workspaceId');
+    return services.runs.navigation(request.workspaceId);
+  });
 
   handle(IPC_CHANNELS.runsEvents, (request) => {
     assertListRunEventsRequest(request);

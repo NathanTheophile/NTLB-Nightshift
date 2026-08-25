@@ -10,6 +10,7 @@ import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
 import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
+import type { RunNavigationItem } from '@shared/contracts/ipc';
 import { resolve } from 'node:path';
 import { resolveEffectiveDevBase } from './ReviewIntegrationService';
 
@@ -32,6 +33,12 @@ export class RunService implements RunServiceContract {
   }
   public find(runId: string): Promise<Run | undefined> { return Promise.resolve(this.runs.find(runId)); }
   public list(workspaceId: string): Run[] { return this.runs.list(workspaceId); }
+  public navigation(workspaceId: string): RunNavigationItem[] {
+    return this.runs.list(workspaceId).map((run) => ({
+      id: run.id, taskId: run.taskId, taskTitle: this.tasks.findById(run.taskId)?.title ?? 'Tâche indisponible',
+      status: run.status, createdAt: run.createdAt, resolvedAgentId: run.resolvedAgentId, resolvedModelId: run.resolvedModelId,
+    }));
+  }
   public events(runId: string, kind: RunEventKind = 'activity', cursor: number | null = null, limit = 100) { return this.runs.listEventPage(runId, kind, cursor, limit); }
   public batchSteps(runId: string) { return this.runs.batchSteps(runId); }
   public validationCommands(runId: string) { return this.runs.validationCommands(runId); }
@@ -82,6 +89,8 @@ export class RunService implements RunServiceContract {
     this.followUpQueue.push(run.id); this.schedule();
     return Promise.resolve(run);
   }
+  // Scheduling work is intentionally synchronous until the launched Run promises yield.
+  // eslint-disable-next-line @typescript-eslint/require-await
   private async fillSlots(): Promise<void> {
     this.scheduling = true;
     try {

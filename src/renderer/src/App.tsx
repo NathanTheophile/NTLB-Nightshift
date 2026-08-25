@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import type { LauncherConfiguration, WorkspaceTool } from '@shared/contracts/ipc';
+import type { LauncherConfiguration, RunNavigationItem, WorkspaceTool } from '@shared/contracts/ipc';
 import type { Workspace } from '@shared/domain/entities';
 import { closeWorkspaceTab, reorderWorkspaceTabs } from '@shared/domain/workspaceTabs';
 
@@ -28,6 +28,8 @@ export const App = () => {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<AppSection>('planner');
+  const [runItems, setRunItems] = useState<RunNavigationItem[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [launcherConfiguration, setLauncherConfiguration] = useState<LauncherConfiguration>({
     ideConfigured: false,
     ideDisplayName: null,
@@ -55,6 +57,12 @@ export const App = () => {
     () => workspaces.find(({ id }) => id === activeWorkspaceId) ?? null,
     [activeWorkspaceId, workspaces],
   );
+  const selectedRun = runItems.find((run) => run.id === selectedRunId) ?? null;
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    const load = (): void => { void window.nightShift.runs.navigation(activeWorkspace.id).then((items) => { setRunItems(items); setSelectedRunId((current) => items.some((item) => item.id === current) ? current : items[0]?.id ?? null); }).catch((error: unknown) => reportError(messageFrom(error))); };
+    load(); const timer = window.setInterval(load, 1_500); return () => window.clearInterval(timer);
+  }, [activeWorkspace, reportError]);
 
   const openWorkspace = async (): Promise<void> => {
     try {
@@ -132,14 +140,14 @@ export const App = () => {
       />
 
       <div className="tool-strip">
-        <QuickActions
+        {activeSection !== 'runs' && <QuickActions
           disabled={!activeWorkspace}
           ideDisplayName={launcherConfiguration.ideDisplayName}
           onLaunch={(tool) => void launchWorkspaceTool(tool)}
-        />
+        />}
         <h1>
           <span className="context-section">{sectionTitles[activeSection]}</span>
-          {activeWorkspace && <span className="context-workspace"> · {activeWorkspace.displayName}</span>}
+          {activeWorkspace && <span className="context-workspace">{activeSection === 'runs' && selectedRun ? ` - ${selectedRun.taskTitle}` : ` · ${activeWorkspace.displayName}`}</span>}
         </h1>
         <div className="active-project-meta">
           {activeWorkspace && <span>{activeWorkspace.isGit ? 'Dépôt Git' : 'Projet non-Git'}</span>}
@@ -152,6 +160,9 @@ export const App = () => {
           activeSection={activeSection}
           hasWorkspace={Boolean(activeWorkspace)}
           onSelect={setActiveSection}
+          runItems={runItems}
+          selectedRunId={selectedRunId}
+          onSelectRun={(runId) => { setSelectedRunId(runId); setActiveSection('runs'); }}
         />
         <main className="central-workspace">
           {loading ? (
@@ -169,7 +180,7 @@ export const App = () => {
           ) : activeSection === 'workers' ? (
             <WorkersView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : activeSection === 'runs' ? (
-            <RunsView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
+            <RunsView key={activeWorkspace.id} workspace={activeWorkspace} selectedRunId={selectedRunId} onSelectRun={setSelectedRunId} onError={reportError} />
           ) : (
             <PlaceholderView section={activeSection} />
           )}
