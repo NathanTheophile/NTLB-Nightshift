@@ -234,7 +234,7 @@ textarea:focus-visible {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
-  gap: 0.5px;
+  gap: 2px;
 }
 
 .workspace-tabs-scroll::-webkit-scrollbar {
