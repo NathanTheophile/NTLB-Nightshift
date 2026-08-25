@@ -1,4 +1,4 @@
-import type { AgentDescriptor, ModelDescriptor } from '@shared/domain/entities';
+import type { AgentDescriptor, ModelDescriptor, PlannerExecutionMode } from '@shared/domain/entities';
 
 import type { AgentAdapter, AgentRegistry as AgentRegistryContract } from './contracts/AgentAdapter';
 
@@ -24,6 +24,9 @@ export class AgentRegistry implements AgentRegistryContract {
   public workerCatalog(models: readonly ModelDescriptor[]): PlannerAgentCatalog {
     const agents = this.detected.filter(({ capabilities }) => capabilities.interactive && capabilities.workerValidated && capabilities.structuredEvents);
     return { agents, modelsByAgent: Object.fromEntries(agents.map((agent) => [agent.id, models.filter((model) => this.supportsWorkerModel(agent.id, model.id))])) };
+  }
+  public catalogForExecutionMode(executionMode: PlannerExecutionMode, models: readonly ModelDescriptor[]): PlannerAgentCatalog {
+    return executionMode === 'delegated_leader' ? this.workerCatalog(models) : this.plannerCatalog(models);
   }
   private supportsPlannerModel(agentId: string, modelId: string): boolean {
     const adapter = this.findAdapter(agentId) as (AgentAdapter & { supportsPlannerModel?: (value: string) => boolean }) | undefined;

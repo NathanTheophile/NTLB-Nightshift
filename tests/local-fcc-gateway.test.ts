@@ -36,6 +36,12 @@ describe('LocalFccGateway', () => {
     }]);
   });
 
+  it('preserves Luna from the live FCC messages catalog for Worker policy filtering', async () => {
+    const gateway = new LocalFccGateway(healthyRuntime(), { fetchModels: () => Promise.resolve({ object: 'list', data: [{ id: 'openai/gpt-5.6-luna', display_name: 'GPT-5.6 Luna', provider_model_ref: 'openai/gpt-5.6-luna' }] }) });
+
+    await expect(gateway.listModels()).resolves.toEqual([expect.objectContaining({ id: 'openai/gpt-5.6-luna' })]);
+  });
+
   it('rejects malformed catalogs instead of inventing fallback entries', () => {
     expect(() => parseModelCatalog({ object: 'list', data: [{ display_name: 'missing id' }] }))
       .toThrow('invalid model identifier');

@@ -121,7 +121,7 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerListTasks]: { request: { workspaceId: string }; response: PlannerTask[] };
   [IPC_CHANNELS.plannerCreateTask]: { request: CreatePlannerTaskInput; response: PlannerTask };
   [IPC_CHANNELS.plannerArchiveTask]: { request: { taskId: string }; response: PlannerTask };
-  [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
+  [IPC_CHANNELS.plannerSelectionCatalog]: { request: { executionMode: PlannerExecutionMode }; response: PlannerSelectionCatalog };
   [IPC_CHANNELS.plannerGetConcurrency]: { request: undefined; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.plannerSetConcurrency]: { request: PlannerConcurrencySettings; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
@@ -170,7 +170,7 @@ export interface NightShiftApi {
     listTasks: (workspaceId: string) => Promise<PlannerTask[]>;
     createTask: (input: CreatePlannerTaskInput) => Promise<PlannerTask>;
     archiveTask: (taskId: string) => Promise<PlannerTask>;
-    selectionCatalog: () => Promise<PlannerSelectionCatalog>;
+    selectionCatalog: (executionMode: PlannerExecutionMode) => Promise<PlannerSelectionCatalog>;
     getConcurrency: () => Promise<PlannerConcurrencySettings>;
     setConcurrency: (limit: 1 | 2 | 3 | 4) => Promise<PlannerConcurrencySettings>;
   };

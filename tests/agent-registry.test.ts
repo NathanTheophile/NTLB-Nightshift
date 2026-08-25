@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { AgentRegistry } from '../src/main/services/AgentRegistry';
+import { ClaudeCodeAdapter } from '../src/main/services/agents/ClaudeCodeAdapter';
 import type { AgentAdapter } from '../src/main/services/contracts/AgentAdapter';
+import type { FccGateway } from '../src/main/services/contracts/FccGateway';
+import type { ProcessSupervisor } from '../src/main/services/contracts/ProcessSupervisor';
 import type { AgentCapabilities } from '../src/shared/domain/entities';
 
 const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
@@ -23,4 +26,21 @@ describe('AgentRegistry', () => {
     const catalog = registry.workerCatalog([{ id: 'model', providerId: 'provider', displayName: 'Model', rawModelRef: 'provider/model', lastSeenAt: '2026-08-25T00:00:00.000Z' }, { id: 'other', providerId: 'provider', displayName: 'Other', rawModelRef: 'provider/other', lastSeenAt: '2026-08-25T00:00:00.000Z' }]);
     expect(catalog.modelsByAgent['claude-code']?.map(({ id }) => id)).toEqual(['model']);
   });
+
+  it('keeps Luna Worker-only while preserving Nemotron in both validated catalogs', async () => {
+    const registry = new AgentRegistry([new ClaudeCodeAdapter(noopSupervisor, healthyGateway, { discoverLauncher: () => Promise.resolve('fcc-claude') })]);
+    await registry.refresh();
+    const models = [model('nvidia_nim/nvidia/nemotron-3-super-120b-a12b'), model('openai/gpt-5.6-luna')];
+
+    expect(registry.catalogForExecutionMode('single_agent', models).modelsByAgent['claude-code']?.map(({ id }) => id))
+      .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
+    expect(registry.catalogForExecutionMode('sequential_batch', models).modelsByAgent['claude-code']?.map(({ id }) => id))
+      .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
+    expect(registry.catalogForExecutionMode('delegated_leader', models).modelsByAgent['claude-code']?.map(({ id }) => id))
+      .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-5.6-luna']);
+  });
 });
+
+const model = (id: string) => ({ id, providerId: id.split('/', 1)[0]!, displayName: id, rawModelRef: id, lastSeenAt: '2026-08-25T00:00:00.000Z' });
+const healthyGateway: FccGateway = { detect: () => Promise.resolve({ state: 'healthy', available: true, endpoint: 'http://127.0.0.1', version: '5.14.2', ownedByNightShift: false, detail: 'healthy', failureReason: null }), ensureAvailable: () => Promise.resolve({ state: 'healthy', available: true, endpoint: 'http://127.0.0.1', version: '5.14.2', ownedByNightShift: false, detail: 'healthy', failureReason: null }), health: () => Promise.resolve({ state: 'healthy', available: true, endpoint: 'http://127.0.0.1', version: '5.14.2', ownedByNightShift: false, detail: 'healthy', failureReason: null }), listModels: () => Promise.resolve([]), stopOwnedProcess: () => Promise.resolve() };
+const noopSupervisor: ProcessSupervisor = { start: (spec) => Promise.resolve({ executionId: spec.executionId, processId: 1, state: 'running', startedAt: '2026-08-25T00:00:00.000Z', lastOutputAt: null, finishedAt: null, cancellationRequested: false, exitCode: null, failureReason: null }), snapshot: () => undefined, subscribe: () => () => undefined, waitForCompletion: (executionId) => Promise.resolve({ executionId, processId: 1, state: 'exited', startedAt: '2026-08-25T00:00:00.000Z', lastOutputAt: null, finishedAt: '2026-08-25T00:00:00.000Z', cancellationRequested: false, exitCode: 0, signal: null, stdout: '2.0.0', stderr: '', failureReason: null }), cancelOwnedTree: () => Promise.resolve() };

@@ -41,7 +41,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
       }).catch((error: unknown) => onError(messageFrom(error))).finally(() => { if (active) setLoading(false); });
     };
     refresh();
-    void window.nightShift.planner.selectionCatalog().then((value) => {
+    void window.nightShift.planner.selectionCatalog(executionMode).then((value) => {
       if (active) setCatalog(value);
     }).catch((error: unknown) => onError(messageFrom(error)));
     void window.nightShift.planner.getConcurrency().then((value) => {
@@ -52,7 +52,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
       active = false;
       window.clearInterval(interval);
     };
-  }, [onError, workspace.id]);
+  }, [executionMode, onError, workspace.id]);
 
   const submitTask = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -164,7 +164,11 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
           </label>
           <label>
             <span>Exécution</span>
-            <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => setExecutionMode(event.target.value as PlannerExecutionMode)}>
+            <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => {
+              setExecutionMode(event.target.value as PlannerExecutionMode);
+              setRequestedAgentId(null);
+              setRequestedModelId(null);
+            }}>
               <option value="single_agent">Single Agent</option>
               <option value="sequential_batch">Sequential Batch</option>
               <option value="delegated_leader">Delegated Leader</option>

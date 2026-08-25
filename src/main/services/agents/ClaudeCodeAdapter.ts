@@ -19,7 +19,10 @@ import { ClaudeStreamJsonParser, type ClaudeStreamEvent } from './claude/ClaudeS
 
 const adapterId = 'claude-code';
 const launcherCommand = 'fcc-claude';
-const validatedPlannerModels = new Set(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
+const nemotronModelId = 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b';
+const lunaModelId = 'openai/gpt-5.6-luna';
+const validatedPlannerModels = new Set([nemotronModelId]);
+const validatedWorkerModels = new Set([nemotronModelId, lunaModelId]);
 
 export interface ClaudeCodeAdapterOptions {
   environment?: NodeJS.ProcessEnv;
@@ -72,7 +75,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   public supportsWorkerModel(modelId: string): boolean {
-    return validatedPlannerModels.has(modelId);
+    return validatedWorkerModels.has(modelId);
   }
 
   public async detect(): Promise<AgentDescriptor> {
