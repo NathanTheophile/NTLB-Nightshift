@@ -90,6 +90,11 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertNonEmptyString(request.runId, 'runId');
     return services.runs.events(request.runId);
   });
+  handle(IPC_CHANNELS.runsBatchSteps, (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.runId, 'runId');
+    return services.runs.batchSteps(request.runId);
+  });
 
   handle(IPC_CHANNELS.runsCancel, async (request) => {
     assertRecord(request);
@@ -174,9 +179,25 @@ function assertListEntriesRequest(value: unknown): asserts value is ListWorkspac
 function assertCreateTaskInput(value: unknown): asserts value is CreatePlannerTaskInput {
   assertRecord(value);
   assertNonEmptyString(value.workspaceId, 'workspaceId');
-  assertNonEmptyString(value.prompt, 'prompt');
+  if (typeof value.prompt !== 'string') {
+    throw new Error('prompt must be a string.');
+  }
   assertNullableString(value.requestedAgentId, 'requestedAgentId');
   assertNullableString(value.requestedModelId, 'requestedModelId');
+  if (value.executionMode === undefined) value.executionMode = 'single_agent';
+  if (value.batchSteps === undefined) value.batchSteps = [];
+  if (value.executionMode !== 'single_agent' && value.executionMode !== 'sequential_batch' && value.executionMode !== 'delegated_leader') {
+    throw new Error('Unsupported Planner execution mode.');
+  }
+  if (!Array.isArray(value.batchSteps) || value.batchSteps.length > 32 || !value.batchSteps.every((step) => typeof step === 'string')) {
+    throw new Error('batchSteps must contain at most 32 strings.');
+  }
+  if (value.executionMode === 'single_agent' && value.batchSteps.length) {
+    throw new Error('Single Agent tasks cannot include batch steps.');
+  }
+  if (value.executionMode === 'sequential_batch' && (!value.batchSteps.length || value.batchSteps.some((step) => !step.trim()))) {
+    throw new Error('Sequential Batch requires non-empty steps.');
+  }
   if (!Number.isInteger(value.priority) || (value.priority as number) < 1 || (value.priority as number) > 99) {
     throw new Error('priority must be an integer between 1 and 99.');
   }

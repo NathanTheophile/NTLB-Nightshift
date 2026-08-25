@@ -1,4 +1,4 @@
-import type { Run, RunEvent } from '@shared/domain/entities';
+import type { BatchStep, Run, RunEvent } from '@shared/domain/entities';
 
 export interface PrepareRunSpec {
   taskId: string;
@@ -13,6 +13,7 @@ export interface RunService {
   find(runId: string): Promise<Run | undefined>;
   list(workspaceId: string): Run[];
   events(runId: string): RunEvent[];
+  batchSteps(runId: string): BatchStep[];
   schedule(): void;
   requestCancellation(runId: string): Promise<Run>;
 }

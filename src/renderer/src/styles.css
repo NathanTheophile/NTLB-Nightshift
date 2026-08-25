@@ -722,7 +722,7 @@ textarea:focus-visible {
 
 .planner-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: clamp(12px, 4vw, 80px);
   margin-bottom: 8px;
 }
@@ -759,6 +759,24 @@ textarea:focus-visible {
 .prompt-field {
   position: relative;
 }
+
+.batch-editor {
+  margin: 0 0 10px;
+  padding: 9px;
+  border-radius: 12px;
+  background: #29272c;
+  max-height: 216px;
+  overflow-y: auto;
+}
+
+.batch-step { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.batch-step > span { color: #aea7b0; font-size: 12px; width: 16px; text-align: right; }
+.batch-step input { min-width: 0; flex: 1; height: 28px; padding: 0 9px; border: 0; border-radius: 7px; background: #3a383d; color: #f0edf1; font: inherit; font-size: 12px; }
+.batch-step input:focus-visible { outline: 2px solid #a78ad0; outline-offset: 1px; }
+.batch-step button, .batch-add { border: 0; border-radius: 6px; background: #454148; color: #eee9f0; cursor: pointer; }
+.batch-step button { width: 26px; height: 26px; }
+.batch-step button:disabled, .batch-add:disabled { opacity: .45; cursor: default; }
+.batch-add { padding: 5px 9px; font-size: 11px; }
 
 .prompt-field textarea,
 .worker-composer textarea {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { CreatePlannerTaskInput } from '@shared/contracts/ipc';
-import type { PlannerTask, PlannerTaskStatus } from '@shared/domain/entities';
+import type { PlannerExecutionMode, PlannerTask, PlannerTaskStatus } from '@shared/domain/entities';
 
 import type { DatabaseService } from '../DatabaseService';
 
@@ -12,6 +12,7 @@ interface PlannerTaskRow {
   prompt: string;
   requested_agent_id: string | null;
   requested_model_id: string | null;
+  execution_mode: PlannerExecutionMode;
   priority: number;
   status: PlannerTaskStatus;
   visible_in_planner: number;
@@ -37,23 +38,33 @@ export class PlannerTaskRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
     const normalizedPrompt = input.prompt.trim();
-    const title = normalizedPrompt.split(/\r?\n/, 1)[0]?.slice(0, 96) ?? normalizedPrompt.slice(0, 96);
+    const firstStep = input.batchSteps?.[0]?.trim() ?? '';
+    const titleSource = normalizedPrompt || ((input.executionMode ?? 'single_agent') === 'sequential_batch' ? firstStep : '');
+    const title = titleSource.split(/\r?\n/, 1)[0]?.slice(0, 96) ?? titleSource.slice(0, 96);
 
     this.database.execute(
       `INSERT INTO tasks(
-        id, workspace_id, title, prompt, requested_agent_id, requested_model_id,
+        id, workspace_id, title, prompt, requested_agent_id, requested_model_id, execution_mode,
         priority, status, visible_in_planner, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?)`,
       id,
       input.workspaceId,
       title,
       normalizedPrompt,
       input.requestedAgentId,
       input.requestedModelId,
+      input.executionMode ?? 'single_agent',
       input.priority,
       now,
       now,
     );
+
+    (input.batchSteps ?? []).forEach((prompt, stepIndex) => {
+      this.database.execute(
+        'INSERT INTO planner_batch_steps(id, task_id, step_index, prompt) VALUES (?, ?, ?, ?)',
+        randomUUID(), id, stepIndex, prompt.trim(),
+      );
+    });
 
     return this.findRequired(id);
   }
@@ -68,6 +79,10 @@ export class PlannerTaskRepository {
       "SELECT * FROM tasks WHERE status = 'queued' AND visible_in_planner = 1 ORDER BY priority ASC, created_at ASC LIMIT 1",
     );
     return row ? mapPlannerTask(row) : undefined;
+  }
+
+  public batchSteps(taskId: string): string[] {
+    return this.database.queryAll<{ prompt: string }>('SELECT prompt FROM planner_batch_steps WHERE task_id = ? ORDER BY step_index', taskId).map((row) => row.prompt);
   }
 
   public setStatus(taskId: string, status: PlannerTaskStatus): PlannerTask {
@@ -106,6 +121,7 @@ const mapPlannerTask = (row: PlannerTaskRow): PlannerTask => ({
   prompt: row.prompt,
   requestedAgentId: row.requested_agent_id,
   requestedModelId: row.requested_model_id,
+  executionMode: row.execution_mode ?? 'single_agent',
   priority: row.priority,
   status: row.status,
   visibleInPlanner: row.visible_in_planner === 1,

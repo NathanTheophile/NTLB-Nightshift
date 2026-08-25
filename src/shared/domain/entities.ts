@@ -18,6 +18,9 @@ export type PlannerTaskStatus =
   | 'blocked'
   | 'cancelled';
 
+export type PlannerExecutionMode = 'single_agent' | 'sequential_batch' | 'delegated_leader';
+export type BatchStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
+
 export interface PlannerTask {
   id: EntityId;
   workspaceId: EntityId;
@@ -25,11 +28,25 @@ export interface PlannerTask {
   prompt: string;
   requestedAgentId: EntityId | null;
   requestedModelId: EntityId | null;
+  executionMode: PlannerExecutionMode;
   priority: number;
   status: PlannerTaskStatus;
   visibleInPlanner: boolean;
   createdAt: IsoTimestamp;
   updatedAt: IsoTimestamp;
+}
+
+export interface BatchStep {
+  id: EntityId;
+  runId: EntityId;
+  stepIndex: number;
+  prompt: string;
+  status: BatchStepStatus;
+  startedAt: IsoTimestamp | null;
+  finishedAt: IsoTimestamp | null;
+  externalSessionId: string | null;
+  resultSummary: string | null;
+  failureReason: string | null;
 }
 
 export type RunStatus =
@@ -48,6 +65,7 @@ export interface Run {
   workspaceId: EntityId;
   resolvedAgentId: EntityId;
   resolvedModelId: EntityId;
+  executionMode: PlannerExecutionMode;
   status: RunStatus;
   baseSha: string | null;
   worktreePath: string | null;
