@@ -60,6 +60,8 @@ export interface AgentAdapter {
   cancel(handleId: string): Promise<void>;
   /** Explicit compatibility evidence for unattended Planner execution. */
   supportsPlannerModel?(modelId: string): boolean;
+  /** Explicit compatibility evidence for structured Worker execution. */
+  supportsWorkerModel?(modelId: string): boolean;
   resume?(sessionId: string): Promise<AgentExecutionHandle>;
 }
 

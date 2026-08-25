@@ -15,4 +15,12 @@ describe('AgentRegistry', () => {
     const catalog = registry.plannerCatalog([{ id: 'model', providerId: 'provider', displayName: 'Model', rawModelRef: 'provider/model', lastSeenAt: '2026-08-25T00:00:00.000Z' }, { id: 'other', providerId: 'provider', displayName: 'Other', rawModelRef: 'provider/other', lastSeenAt: '2026-08-25T00:00:00.000Z' }]);
     expect(catalog.modelsByAgent.codex?.map(({ id }) => id)).toEqual(['model']);
   });
+
+  it('exposes only explicitly validated Worker model combinations', async () => {
+    const workerCapabilities: AgentCapabilities = { ...capabilities, interactive: true, workerValidated: true };
+    const worker: AgentAdapter = { ...adapter('claude-code', true), capabilities: () => workerCapabilities, detect: () => Promise.resolve({ id: 'claude-code', displayName: 'Claude Code', fccLauncher: 'fcc-claude', installed: true, launchable: true, version: 'test', capabilities: workerCapabilities, lastValidatedAt: null }), supportsWorkerModel: (model) => model === 'model' };
+    const registry = new AgentRegistry([worker]); await registry.refresh();
+    const catalog = registry.workerCatalog([{ id: 'model', providerId: 'provider', displayName: 'Model', rawModelRef: 'provider/model', lastSeenAt: '2026-08-25T00:00:00.000Z' }, { id: 'other', providerId: 'provider', displayName: 'Other', rawModelRef: 'provider/other', lastSeenAt: '2026-08-25T00:00:00.000Z' }]);
+    expect(catalog.modelsByAgent['claude-code']?.map(({ id }) => id)).toEqual(['model']);
+  });
 });

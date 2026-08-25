@@ -12,7 +12,7 @@ import type { CreateWorkerConversationSpec, WorkerSessionService as WorkerSessio
 export type CreateWorkerInput = CreateWorkerConversationSpec;
 
 export class WorkerSessionService implements WorkerSessionServiceContract {
-  private readonly activeHandles = new Map<string, { adapter: AgentAdapter; handleId: string }>();
+  private readonly activeHandles = new Map<string, { adapter: AgentAdapter; handleId: string | null; terminationRequested: boolean }>();
 
   public constructor(
     private readonly workers: WorkerRepository,
@@ -33,6 +33,7 @@ export class WorkerSessionService implements WorkerSessionServiceContract {
     if (!workspace) throw new Error('Worker workspace was not found.');
     const adapter = this.adapters.get(input.agentId);
     if (!adapter || !adapter.capabilities().workerValidated || !adapter.capabilities().structuredEvents) throw new Error('Selected Agent is not validated for structured Workers.');
+    if (adapter.supportsWorkerModel?.(input.modelId) !== true) throw new Error('Selected Agent and model are not validated for Workers.');
     if (!input.modelId.trim()) throw new Error('A compatible FCC model is required.');
 
     const draftId = randomUUID();
@@ -53,12 +54,19 @@ export class WorkerSessionService implements WorkerSessionServiceContract {
     if (this.activeHandles.has(workerId)) throw new Error('Claude is still responding to this Worker.');
     const adapter = this.adapters.get(worker.agentId);
     if (!adapter) throw new Error('Worker Agent is no longer available.');
+    this.activeHandles.set(workerId, { adapter, handleId: null, terminationRequested: false });
     this.workers.appendEvent(workerId, 'user', message.trim(), { role: 'user' });
     this.workers.setState(workerId, 'active');
     let handle;
     try {
       handle = await adapter.startWorker({ workerId, workspaceId: worker.workspaceId, workingDirectory: worker.workingDirectory, modelId: worker.modelId, permissionProfile: worker.permissionProfile, isolationMode: worker.isolationMode, prompt: message.trim(), externalSessionId: worker.externalSessionId, onProtocolEvent: (event) => this.persistProtocol(workerId, event) });
-      this.activeHandles.set(workerId, { adapter, handleId: handle.handleId });
+      const slot = this.activeHandles.get(workerId);
+      if (!slot) {
+        await adapter.cancel(handle.handleId);
+      } else {
+        slot.handleId = handle.handleId;
+        if (slot.terminationRequested || this.workers.findRequired(workerId).status === 'terminated') await adapter.cancel(handle.handleId);
+      }
       const result = await handle.completion;
       this.activeHandles.delete(workerId);
       if (this.workers.findRequired(workerId).status !== 'terminated') {
@@ -68,18 +76,24 @@ export class WorkerSessionService implements WorkerSessionServiceContract {
       if (result.stderr) this.workers.appendEvent(workerId, 'stderr', result.stderr, { kind: 'stderr' });
       return this.workers.findRequired(workerId);
     } catch (error) {
-      this.activeHandles.delete(workerId); this.workers.setState(workerId, 'error');
-      this.workers.appendEvent(workerId, 'error', error instanceof Error ? error.message : String(error), { kind: 'worker_error' });
+      this.activeHandles.delete(workerId);
+      if (this.workers.findRequired(workerId).status !== 'terminated') {
+        this.workers.setState(workerId, 'error');
+        this.workers.appendEvent(workerId, 'error', error instanceof Error ? error.message : String(error), { kind: 'worker_error' });
+      }
       throw error;
     }
   }
 
   public async terminate(workerId: string): Promise<WorkerConversation> {
     const active = this.activeHandles.get(workerId);
-    if (active) await active.adapter.cancel(active.handleId);
-    this.activeHandles.delete(workerId);
+    if (active) {
+      active.terminationRequested = true;
+    }
     this.workers.appendEvent(workerId, 'system', null, { kind: 'worker_terminated' });
-    return this.workers.setState(workerId, 'terminated');
+    const terminated = this.workers.setState(workerId, 'terminated');
+    if (active?.handleId) await active.adapter.cancel(active.handleId);
+    return terminated;
   }
 
   private async resolveScope(repositoryRoot: string, isolationMode: IsolationMode, workerId: string): Promise<{ workingDirectory: string; baseSha: string | null }> {

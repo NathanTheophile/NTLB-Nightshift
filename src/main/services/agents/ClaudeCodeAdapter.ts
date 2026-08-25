@@ -71,6 +71,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     return validatedPlannerModels.has(modelId);
   }
 
+  public supportsWorkerModel(modelId: string): boolean {
+    return validatedPlannerModels.has(modelId);
+  }
+
   public async detect(): Promise<AgentDescriptor> {
     const executablePath = await this.discoverLauncher();
     if (!executablePath) return this.descriptor(launcherCommand, false, false, null, null);
