@@ -124,11 +124,12 @@ void app.whenReady().then(() => {
     console.error(`[FCC] Runtime startup failed: ${detail}`);
   });
 
+  const worktreeService = new GitWorktreeService(join(app.getPath('userData'), 'worktrees'));
   const runService = new RunService(
     runs,
     tasks,
     workspaces,
-    new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
+    worktreeService,
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
     { agentId: 'claude-code', modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs: 30 * 60_000 },
     processSupervisor,
@@ -137,7 +138,7 @@ void app.whenReady().then(() => {
   const workerService = new WorkerSessionService(
     workers,
     workspaces,
-    new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
+    worktreeService,
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
   const reviewService = new RunReviewService(runs, workspaces);
@@ -146,7 +147,7 @@ void app.whenReady().then(() => {
   registerIpcHandlers({
     appVersion: app.getVersion(),
     workspaces: new WorkspaceService(workspaces, settings),
-    planner: new PlannerService(tasks, workspaces, runService),
+    planner: new PlannerService(tasks, workspaces, runService, worktreeService),
     plannerSelectionCatalog: async () => {
       const activeRuntime = runtime;
       if (!activeRuntime) throw new Error('NightShift runtime is unavailable.');

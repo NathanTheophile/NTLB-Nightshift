@@ -83,6 +83,13 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     return services.planner.archiveTask(request.taskId);
   });
 
+  handle(IPC_CHANNELS.plannerDeleteTask, async (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.taskId, 'taskId');
+    await services.planner.deleteTask(request.taskId);
+    return undefined;
+  });
+
   handle(IPC_CHANNELS.plannerSelectionCatalog, () => services.plannerSelectionCatalog());
   handle(IPC_CHANNELS.plannerGetConcurrency, () => ({ limit: services.runs.concurrencyLimit() as 1 | 2 | 3 | 4 }));
   handle(IPC_CHANNELS.plannerSetConcurrency, (request) => {

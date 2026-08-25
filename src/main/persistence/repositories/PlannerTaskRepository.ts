@@ -116,6 +116,13 @@ export class PlannerTaskRepository {
     return this.findRequired(taskId);
   }
 
+  public delete(taskId: string): void {
+    // Delete batch steps for the task first
+    this.database.execute('DELETE FROM planner_batch_steps WHERE task_id = ?', taskId);
+    // Delete the task
+    this.database.execute('DELETE FROM tasks WHERE id = ?', taskId);
+  }
+
   private findRequired(id: string): PlannerTask {
     const row = this.database.queryOne<PlannerTaskRow>('SELECT * FROM tasks WHERE id = ?', id);
     if (!row) {

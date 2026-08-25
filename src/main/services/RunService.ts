@@ -89,6 +89,10 @@ export class RunService implements RunServiceContract {
     this.followUpQueue.push(run.id); this.schedule();
     return Promise.resolve(run);
   }
+
+  public deleteRun(runId: string): void {
+    this.runs.delete(runId);
+  }
   // Scheduling work is intentionally synchronous until the launched Run promises yield.
   // eslint-disable-next-line @typescript-eslint/require-await
   private async fillSlots(): Promise<void> {

@@ -80,6 +80,7 @@ export const IPC_CHANNELS = {
   plannerListTasks: 'planner:list-tasks',
   plannerCreateTask: 'planner:create-task',
   plannerArchiveTask: 'planner:archive-task',
+  plannerDeleteTask: 'planner:delete-task',
   plannerSelectionCatalog: 'planner:selection-catalog',
   plannerGetConcurrency: 'planner:get-concurrency',
   plannerSetConcurrency: 'planner:set-concurrency',
@@ -121,6 +122,7 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerListTasks]: { request: { workspaceId: string }; response: PlannerTask[] };
   [IPC_CHANNELS.plannerCreateTask]: { request: CreatePlannerTaskInput; response: PlannerTask };
   [IPC_CHANNELS.plannerArchiveTask]: { request: { taskId: string }; response: PlannerTask };
+  [IPC_CHANNELS.plannerDeleteTask]: { request: { taskId: string }; response: void };
   [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
   [IPC_CHANNELS.plannerGetConcurrency]: { request: undefined; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.plannerSetConcurrency]: { request: PlannerConcurrencySettings; response: PlannerConcurrencySettings };

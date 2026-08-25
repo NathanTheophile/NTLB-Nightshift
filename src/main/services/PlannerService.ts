@@ -1,16 +1,19 @@
 import type { CreatePlannerTaskInput } from '@shared/contracts/ipc';
 import type { PlannerTask } from '@shared/domain/entities';
+import type { RunStatus } from '@shared/domain/entities';
 
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
 import type { PlannerService as PlannerServiceContract } from './contracts/PlannerService';
 import type { RunService } from './contracts/RunService';
+import type { WorktreeService } from './contracts/WorktreeService';
 
 export class PlannerService implements PlannerServiceContract {
   public constructor(
     private readonly tasks: PlannerTaskRepository,
     private readonly workspaces: WorkspaceRepository,
     private readonly runs?: RunService,
+    private readonly worktrees?: WorktreeService,
   ) {}
 
   public listTasks(workspaceId: string): PlannerTask[] {
@@ -49,6 +52,37 @@ export class PlannerService implements PlannerServiceContract {
       throw new Error('A Planner task id is required.');
     }
     return this.tasks.archiveCompleted(taskId);
+  }
+
+  public async deleteTask(taskId: string): Promise<void> {
+    const task = this.tasks.findRequired(taskId);
+    this.assertWorkspace(task.workspaceId);
+
+    // Check that no associated run is in a non-terminal state
+    const nonTerminalStatuses = new Set<RunStatus>(['preparing', 'running', 'cancel_requested']);
+    const runs = this.runs ? this.runs.list(task.workspaceId).filter(r => r.taskId === task.id) : [];
+    for (const run of runs) {
+      if (nonTerminalStatuses.has(run.status)) {
+        throw new Error(`Cannot delete task ${taskId} because run ${run.id} is in ${run.status} state.`);
+      }
+    }
+
+    // For each run, remove the worktree (if exists) and then delete the run
+    for (const run of runs) {
+      if (run.worktreePath) {
+        try {
+          await this.worktrees?.removeAfterEvidencePersisted(run.worktreePath);
+        } catch (error) {
+          // If worktree removal fails, we should not delete the task and should surface the error
+          throw new Error(`Failed to remove worktree for run ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      // Delete the run
+      this.runs?.deleteRun(run.id);
+    }
+
+    // Finally, delete the task and its batch steps
+    this.tasks.delete(taskId);
   }
 
   private assertWorkspace(workspaceId: string): void {

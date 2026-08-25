@@ -96,6 +96,14 @@ export class RunRepository {
     this.database.execute('UPDATE run_validation_commands SET status = ?, finished_at = ?, exit_code = ?, output = ?, output_truncated = ? WHERE id = ?', status, new Date().toISOString(), exitCode, output, outputTruncated ? 1 : 0, id); const row = this.database.queryOne<ValidationCommandRow>('SELECT * FROM run_validation_commands WHERE id = ?', id); if (!row) throw new Error(`Validation command ${id} was not found.`); return mapValidationCommand(row);
   }
   public interruptRunningValidation(runId: string): void { this.database.execute("UPDATE run_validation_commands SET status = 'interrupted', finished_at = ?, output = CASE WHEN output = '' THEN ? ELSE output END WHERE run_id = ? AND status = 'running'", new Date().toISOString(), 'Validation interrupted by NightShift restart.', runId); }
+
+	  public delete(id: string): void {
+	    // Delete dependent records first due to foreign key constraints
+	    this.database.execute('DELETE FROM run_validation_commands WHERE run_id = ?', id);
+	    this.database.execute('DELETE FROM run_batch_steps WHERE run_id = ?', id);
+	    this.database.execute('DELETE FROM run_events WHERE run_id = ?', id);
+	    this.database.execute('DELETE FROM runs WHERE id = ?', id);
+	  }
   public staleRuns(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE status IN ('preparing', 'running', 'cancel_requested') ORDER BY created_at").map(mapRun); }
   public runningValidations(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE validation_status = 'running' ORDER BY created_at").map(mapRun); }
   public publishingCandidates(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE candidate_publish_state = 'publishing'").map(mapRun); }
