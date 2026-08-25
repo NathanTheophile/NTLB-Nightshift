@@ -1,21 +1,26 @@
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+
+import type { WorkerSelectionCatalog } from '@shared/contracts/ipc';
+import type { IsolationMode, WorkerConversation, WorkerEvent, WorkerPermissionProfile, Workspace } from '@shared/domain/entities';
+
 import { EmptyState } from './EmptyState';
 
-export const WorkersView = () => (
-  <section className="conversation-view">
-    <div className="conversation-canvas">
-      <EmptyState
-        eyebrow="WORKERS"
-        title="Aucune conversation de code"
-        detail="La création et l’exécution des Workers seront reliées après validation du premier adaptateur FCC. Aucun message agent n’est simulé ici."
-      />
-    </div>
-    <div className="worker-composer is-disabled" aria-disabled="true">
-      <div className="worker-locked-fields">
-        <span>Agent · aucun validé</span>
-        <span>Modèle · FCC non connecté</span>
-        <span>Accès · à configurer</span>
-      </div>
-      <textarea disabled placeholder="Le runtime Worker n’est pas encore connecté…" />
-    </div>
-  </section>
-);
+export const WorkersView = ({ workspace, onError }: { workspace: Workspace; onError: (message: string) => void }) => {
+  const [workers, setWorkers] = useState<WorkerConversation[]>([]); const [selectedId, setSelectedId] = useState<string | null>(null); const [events, setEvents] = useState<WorkerEvent[]>([]);
+  const [catalog, setCatalog] = useState<WorkerSelectionCatalog | null>(null); const [title, setTitle] = useState('Claude Worker'); const [agentId, setAgentId] = useState('claude-code'); const [modelId, setModelId] = useState('');
+  const [permissionProfile, setPermissionProfile] = useState<WorkerPermissionProfile>('workspace_write'); const [isolationMode, setIsolationMode] = useState<IsolationMode>('direct_workspace'); const [message, setMessage] = useState(''); const [creating, setCreating] = useState(false); const [sending, setSending] = useState(false); const [stopping, setStopping] = useState(false);
+  const selected = useMemo(() => workers.find(({ id }) => id === selectedId) ?? null, [selectedId, workers]);
+  const show = useCallback((error: unknown): void => onError(error instanceof Error ? error.message : 'Worker operation failed.'), [onError]);
+  const refresh = useCallback(async (): Promise<void> => { const next = await window.nightShift.workers.list(workspace.id); setWorkers(next); setSelectedId((current) => current && next.some(({ id }) => id === current) ? current : next[0]?.id ?? null); }, [workspace.id]);
+  useEffect(() => { void Promise.resolve().then(refresh).catch(show); void Promise.resolve().then(() => window.nightShift.workers.selectionCatalog()).then((value) => { setCatalog(value); const claude = value.agents.find(({ id }) => id === 'claude-code') ?? value.agents[0]; if (claude) { setAgentId(claude.id); setModelId(value.modelsByAgent[claude.id]?.[0]?.id ?? ''); } }).catch(show); const interval = window.setInterval(() => void refresh().catch(show), 1500); return () => window.clearInterval(interval); }, [refresh, show]);
+  useEffect(() => { void Promise.resolve().then(async () => selected ? window.nightShift.workers.events(selected.id) : []).then(setEvents).catch(show); }, [selected, show]);
+  const create = async (event: FormEvent<HTMLFormElement>): Promise<void> => { event.preventDefault(); if (!modelId || creating) return; setCreating(true); try { const worker = await window.nightShift.workers.create({ workspaceId: workspace.id, title, agentId, modelId, permissionProfile, isolationMode }); await refresh(); setSelectedId(worker.id); } catch (error) { show(error); } finally { setCreating(false); } };
+  const send = async (event: FormEvent<HTMLFormElement>): Promise<void> => { event.preventDefault(); if (!selected || !message.trim() || sending || stopping) return; setSending(true); try { await window.nightShift.workers.send(selected.id, message); setMessage(''); await refresh(); setEvents(await window.nightShift.workers.events(selected.id)); } catch (error) { show(error); } finally { setSending(false); } };
+  const stop = async (): Promise<void> => { if (!selected || stopping) return; setStopping(true); try { await window.nightShift.workers.stop(selected.id); await refresh(); } catch (error) { show(error); } finally { setStopping(false); } };
+  const models = catalog?.modelsByAgent[agentId] ?? [];
+  return <section className="conversation-view workers-live">
+    <aside className="worker-list">{workers.map((worker) => <button type="button" key={worker.id} className={worker.id === selectedId ? 'is-selected' : ''} onClick={() => setSelectedId(worker.id)}><strong>{worker.title}</strong><span>{worker.status}</span></button>)}</aside>
+    <div className="conversation-canvas">{!selected ? <><EmptyState eyebrow="WORKERS" title="Créer une conversation Claude" detail="Les messages et événements structurés seront persistés localement." /><form className="worker-create" onSubmit={(event) => void create(event)}><input value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Titre du Worker" /><select value={agentId} onChange={(event) => { setAgentId(event.target.value); setModelId(catalog?.modelsByAgent[event.target.value]?.[0]?.id ?? ''); }} aria-label="Agent">{catalog?.agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.displayName}</option>)}</select><select value={modelId} onChange={(event) => setModelId(event.target.value)} aria-label="Modèle">{models.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select><select value={permissionProfile} onChange={(event) => { const value = event.target.value as WorkerPermissionProfile; setPermissionProfile(value); setIsolationMode(value === 'isolated_write' ? 'isolated_worktree' : 'direct_workspace'); }} aria-label="Permission"><option value="read_only">Lecture seule</option><option value="workspace_write">Écriture workspace</option><option value="isolated_write">Écriture isolée</option></select><select value={isolationMode} disabled={permissionProfile !== 'isolated_write'} onChange={(event) => setIsolationMode(event.target.value as IsolationMode)} aria-label="Isolation"><option value="direct_workspace">Workspace direct</option><option value="isolated_worktree">Worktree isolé</option></select><button type="submit" disabled={creating || !modelId}>Créer le Worker</button></form></> : <div className="worker-transcript">{events.map((item) => <article key={item.id} className={`worker-event worker-event-${item.roleOrType}`}><time>{new Date(item.timestamp).toLocaleTimeString()}</time><strong>{item.roleOrType}</strong><p>{item.content ?? JSON.stringify(item.payload)}</p></article>)}</div>}</div>
+    <form className="worker-composer" onSubmit={(event) => void send(event)}><div className="worker-locked-fields">{selected ? <><span>Agent · {selected.agentId}</span><span>Modèle · {selected.modelId}</span><span>Accès · {selected.permissionProfile}</span><span>Isolation · {selected.isolationMode}</span></> : <span>Créez un Worker pour verrouiller Agent et Modèle.</span>}</div><textarea value={message} disabled={!selected || selected.status === 'terminated' || sending || stopping} onChange={(event) => setMessage(event.target.value)} placeholder="Envoyer un message à Claude…" /><button type="submit" disabled={!selected || !message.trim() || sending || stopping}>{sending ? 'En cours…' : 'Envoyer'}</button>{selected && selected.status !== 'terminated' && <button type="button" onClick={() => void stop()} disabled={stopping}>{stopping ? 'Arrêt…' : 'Arrêter'}</button>}</form>
+  </section>;
+};

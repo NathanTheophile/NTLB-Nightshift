@@ -167,7 +167,7 @@ export const App = () => {
           ) : activeSection === 'planner' ? (
             <PlannerView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : activeSection === 'workers' ? (
-            <WorkersView />
+            <WorkersView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : activeSection === 'runs' ? (
             <RunsView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : (

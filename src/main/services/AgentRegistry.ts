@@ -21,8 +21,16 @@ export class AgentRegistry implements AgentRegistryContract {
     const agents = this.detected.filter(({ capabilities }) => capabilities.headless && capabilities.plannerValidated);
     return { agents, modelsByAgent: Object.fromEntries(agents.map((agent) => [agent.id, models.filter((model) => this.supportsPlannerModel(agent.id, model.id))])) };
   }
+  public workerCatalog(models: readonly ModelDescriptor[]): PlannerAgentCatalog {
+    const agents = this.detected.filter(({ capabilities }) => capabilities.interactive && capabilities.workerValidated && capabilities.structuredEvents);
+    return { agents, modelsByAgent: Object.fromEntries(agents.map((agent) => [agent.id, models.filter((model) => this.supportsWorkerModel(agent.id, model.id))])) };
+  }
   private supportsPlannerModel(agentId: string, modelId: string): boolean {
     const adapter = this.findAdapter(agentId) as (AgentAdapter & { supportsPlannerModel?: (value: string) => boolean }) | undefined;
     return adapter?.supportsPlannerModel?.(modelId) === true;
+  }
+  private supportsWorkerModel(agentId: string, modelId: string): boolean {
+    const adapter = this.findAdapter(agentId) as (AgentAdapter & { supportsWorkerModel?: (value: string) => boolean }) | undefined;
+    return adapter?.supportsWorkerModel?.(modelId) === true;
   }
 }

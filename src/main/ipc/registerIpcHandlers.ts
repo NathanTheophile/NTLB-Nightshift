@@ -9,12 +9,14 @@ import {
   type ListWorkspaceEntriesRequest,
   type LaunchWorkspaceToolRequest,
   type WorkspaceTabState,
+  type CreateWorkerInput,
 } from '@shared/contracts/ipc';
 
 import type { LauncherService } from '../services/LauncherService';
 import type { PlannerService } from '../services/PlannerService';
 import type { RunService } from '../services/contracts/RunService';
 import type { WorkspaceService } from '../services/WorkspaceService';
+import type { WorkerSessionService } from '../services/contracts/WorkerSessionService';
 
 interface IpcServices {
   appVersion: string;
@@ -23,6 +25,8 @@ interface IpcServices {
   plannerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
   runs: RunService;
   launcher: LauncherService;
+  workers: WorkerSessionService & { createConversation(input: CreateWorkerInput): Promise<IpcContract[typeof IPC_CHANNELS.workersCreate]['response']> };
+  workerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.workersSelectionCatalog]['response']>;
 }
 
 type Handler<Channel extends IpcChannel> = (
@@ -92,6 +96,12 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertNonEmptyString(request.runId, 'runId');
     return services.runs.requestCancellation(request.runId);
   });
+  handle(IPC_CHANNELS.workersList, (request) => { assertRecord(request); assertNonEmptyString(request.workspaceId, 'workspaceId'); return services.workers.list(request.workspaceId); });
+  handle(IPC_CHANNELS.workersCreate, (request) => { assertCreateWorkerInput(request); return services.workers.createConversation(request); });
+  handle(IPC_CHANNELS.workersEvents, (request) => { assertRecord(request); assertNonEmptyString(request.workerId, 'workerId'); return services.workers.events(request.workerId); });
+  handle(IPC_CHANNELS.workersSend, (request) => { assertRecord(request); assertNonEmptyString(request.workerId, 'workerId'); assertNonEmptyString(request.message, 'message'); return services.workers.send(request.workerId, request.message); });
+  handle(IPC_CHANNELS.workersStop, (request) => { assertRecord(request); assertNonEmptyString(request.workerId, 'workerId'); return services.workers.terminate(request.workerId); });
+  handle(IPC_CHANNELS.workersSelectionCatalog, () => services.workerSelectionCatalog());
 
   handle(IPC_CHANNELS.launcherOpenWorkspaceTool, async (request) => {
     assertLaunchRequest(request);
@@ -170,6 +180,12 @@ function assertCreateTaskInput(value: unknown): asserts value is CreatePlannerTa
   if (!Number.isInteger(value.priority) || (value.priority as number) < 1 || (value.priority as number) > 99) {
     throw new Error('priority must be an integer between 1 and 99.');
   }
+}
+
+function assertCreateWorkerInput(value: unknown): asserts value is CreateWorkerInput {
+  assertRecord(value); assertNonEmptyString(value.workspaceId, 'workspaceId'); assertNonEmptyString(value.title, 'title'); assertNonEmptyString(value.agentId, 'agentId'); assertNonEmptyString(value.modelId, 'modelId');
+  if (value.permissionProfile !== 'read_only' && value.permissionProfile !== 'workspace_write' && value.permissionProfile !== 'isolated_write') throw new Error('Unsupported Worker permission profile.');
+  if (value.isolationMode !== 'direct_workspace' && value.isolationMode !== 'isolated_worktree') throw new Error('Unsupported Worker isolation mode.');
 }
 
 function assertLaunchRequest(value: unknown): asserts value is LaunchWorkspaceToolRequest {

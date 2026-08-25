@@ -152,4 +152,13 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE runs ADD COLUMN final_git_state TEXT;
     `,
   },
+  {
+    version: 4,
+    name: 'worker_execution_scope',
+    sql: `
+      ALTER TABLE workers ADD COLUMN working_directory TEXT;
+      ALTER TABLE workers ADD COLUMN base_sha TEXT;
+      UPDATE workers SET working_directory = '' WHERE working_directory IS NULL;
+    `,
+  },
 ];

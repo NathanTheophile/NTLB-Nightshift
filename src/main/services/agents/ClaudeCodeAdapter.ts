@@ -14,7 +14,7 @@ import type {
 import type { FccGateway } from '../contracts/FccGateway';
 import type { ProcessSupervisor, SupervisedProcessEvent, SupervisedProcessOutputEvent } from '../contracts/ProcessSupervisor';
 import { discoverExecutable } from '../runtime/executableDiscovery';
-import { buildClaudeRunArguments } from './claude/claudeCommand';
+import { buildClaudeRunArguments, buildClaudeWorkerArguments } from './claude/claudeCommand';
 import { ClaudeStreamJsonParser, type ClaudeStreamEvent } from './claude/ClaudeStreamJsonParser';
 
 const adapterId = 'claude-code';
@@ -25,7 +25,7 @@ export interface ClaudeCodeAdapterOptions {
   environment?: NodeJS.ProcessEnv;
   discoverLauncher?: () => Promise<string | null>;
   now?: () => Date;
-  createExecutionId?: (purpose: 'detect' | 'run', sourceId: string) => string;
+  createExecutionId?: (purpose: 'detect' | 'run' | 'worker', sourceId: string) => string;
 }
 
 export class ClaudeCodeAdapter implements AgentAdapter {
@@ -33,7 +33,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private readonly environment: Readonly<Record<string, string>>;
   private readonly discoverLauncher: () => Promise<string | null>;
   private readonly now: () => Date;
-  private readonly createExecutionId: (purpose: 'detect' | 'run', sourceId: string) => string;
+  private readonly createExecutionId: (purpose: 'detect' | 'run' | 'worker', sourceId: string) => string;
 
   public constructor(
     private readonly supervisor: ProcessSupervisor,
@@ -51,23 +51,27 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   public capabilities(): AgentCapabilities {
     return {
-      interactive: false,
+      interactive: true,
       headless: true,
       structuredEvents: true,
       rawPty: false,
-      resume: false,
+      resume: true,
       modelOverride: true,
       cancel: true,
       workingDirectory: true,
       imageInput: false,
       subagents: false,
       plannerValidated: true,
-      workerValidated: false,
+      workerValidated: true,
       renderMode: 'structured',
     };
   }
 
   public supportsPlannerModel(modelId: string): boolean {
+    return validatedPlannerModels.has(modelId);
+  }
+
+  public supportsWorkerModel(modelId: string): boolean {
     return validatedPlannerModels.has(modelId);
   }
 
@@ -166,8 +170,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   public startWorker(spec: WorkerStartSpec): Promise<AgentExecutionHandle> {
-    void spec;
-    return Promise.reject(new Error('Claude Worker sessions are not implemented in this runtime milestone.'));
+    return this.startStructuredWorker(spec);
   }
 
   public cancel(handleId: string): Promise<void> {
@@ -191,6 +194,30 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       capabilities: this.capabilities(),
       lastValidatedAt,
     };
+  }
+
+  private async startStructuredWorker(spec: WorkerStartSpec): Promise<AgentExecutionHandle> {
+    const runtime = await this.gateway.ensureAvailable();
+    if (!runtime.available) throw new Error(runtime.failureReason ?? 'FCC is unavailable.');
+    const executablePath = await this.discoverLauncher();
+    if (!executablePath) throw new Error('fcc-claude was not found on PATH.');
+    const directory = await stat(spec.workingDirectory);
+    if (!directory.isDirectory()) throw new Error('Claude working directory must be an existing directory.');
+
+    const handleId = this.createExecutionId('worker', spec.workerId);
+    await this.supervisor.start({ executionId: handleId, executablePath, arguments: buildClaudeWorkerArguments(spec), workingDirectory: spec.workingDirectory, environment: this.environment });
+    const parser = new ClaudeStreamJsonParser(); const events: AgentProtocolEvent[] = []; const reference: { current?: AgentExecutionHandle } = {};
+    const append = (event: ClaudeStreamEvent, timestamp: string): void => {
+      const normalized: AgentProtocolEvent = { sequence: events.length, timestamp, raw: event.rawLine, parsed: event.parsed, type: event.type, externalSessionId: event.sessionId, terminal: event.terminal, parseError: event.parseError };
+      events.push(normalized); if (parser.sessionId && reference.current) reference.current.externalSessionId = parser.sessionId; spec.onProtocolEvent?.(normalized);
+    };
+    const unsubscribe = this.supervisor.subscribe(handleId, (event) => { if (isStdout(event)) for (const parsed of parser.push(event.chunk)) append(parsed, event.observedAt); });
+    const completion = this.supervisor.waitForCompletion(handleId).then((result): AgentExecutionResult => {
+      for (const parsed of parser.finish()) append(parsed, result.finishedAt ?? this.now().toISOString()); unsubscribe();
+      const terminalEvent = [...events].reverse().find(({ terminal }) => terminal) ?? null;
+      return { handleId, succeeded: executionFailure(result.exitCode, terminalEvent) === null, failureReason: executionFailure(result.exitCode, terminalEvent), exitCode: result.exitCode, signal: result.signal, externalSessionId: parser.sessionId, events, terminalEvent, stderr: result.stderr };
+    });
+    const handle: AgentExecutionHandle = { handleId, externalSessionId: spec.externalSessionId, events, completion }; reference.current = handle; return handle;
   }
 }
 

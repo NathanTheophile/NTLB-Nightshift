@@ -7,6 +7,7 @@ import { registerIpcHandlers } from './ipc/registerIpcHandlers';
 import { DatabaseService } from './persistence/DatabaseService';
 import { PlannerTaskRepository } from './persistence/repositories/PlannerTaskRepository';
 import { RunRepository } from './persistence/repositories/RunRepository';
+import { WorkerRepository } from './persistence/repositories/WorkerRepository';
 import { SettingsRepository } from './persistence/repositories/SettingsRepository';
 import { WorkspaceRepository } from './persistence/repositories/WorkspaceRepository';
 import { LauncherService } from './services/LauncherService';
@@ -22,6 +23,7 @@ import type { AgentAdapter } from './services/contracts/AgentAdapter';
 import type { FccHealth } from './services/contracts/FccGateway';
 import { FccRuntimeManager } from './services/runtime/FccRuntimeManager';
 import { LocalFccGateway } from './services/runtime/LocalFccGateway';
+import { WorkerSessionService } from './services/WorkerSessionService';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
 let database: DatabaseService | undefined;
@@ -91,6 +93,7 @@ void app.whenReady().then(() => {
   const tasks = new PlannerTaskRepository(database);
   const settings = new SettingsRepository(database);
   const runs = new RunRepository(database);
+  const workers = new WorkerRepository(database);
   const processSupervisor = new WindowsProcessSupervisor();
   const fccRuntime = new FccRuntimeManager({ supervisor: processSupervisor });
   const fccGateway = new LocalFccGateway(fccRuntime);
@@ -126,6 +129,12 @@ void app.whenReady().then(() => {
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
     { agentId: 'claude-code', modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs: 30 * 60_000 },
   );
+  const workerService = new WorkerSessionService(
+    workers,
+    workspaces,
+    new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
+    new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
+  );
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
@@ -140,6 +149,14 @@ void app.whenReady().then(() => {
       return { ...catalog, defaultAgentId: 'claude-code', defaultModelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b' };
     },
     runs: runService,
+    workers: workerService,
+    workerSelectionCatalog: async () => {
+      const activeRuntime = runtime;
+      if (!activeRuntime) throw new Error('NightShift runtime is unavailable.');
+      await activeRuntime.availability;
+      await activeRuntime.agentRegistry.refresh();
+      return activeRuntime.agentRegistry.workerCatalog(await activeRuntime.fccGateway.listModels());
+    },
     launcher: new LauncherService(settings, workspaces),
   });
   runService.schedule();

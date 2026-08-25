@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { DatabaseService } from '../src/main/persistence/DatabaseService';
 import { PlannerTaskRepository } from '../src/main/persistence/repositories/PlannerTaskRepository';
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
+import { WorkerRepository } from '../src/main/persistence/repositories/WorkerRepository';
 import { SettingsRepository } from '../src/main/persistence/repositories/SettingsRepository';
 import { WorkspaceService } from '../src/main/services/WorkspaceService';
 
@@ -25,11 +26,11 @@ describe('DatabaseService', () => {
     const databasePath = join(directory, 'nightshift.sqlite');
 
     const firstOpen = new DatabaseService(databasePath);
-    expect(firstOpen.schemaVersion()).toBe(3);
+    expect(firstOpen.schemaVersion()).toBe(4);
     firstOpen.close();
 
     const secondOpen = new DatabaseService(databasePath);
-    expect(secondOpen.schemaVersion()).toBe(3);
+    expect(secondOpen.schemaVersion()).toBe(4);
     expect(
       secondOpen
         .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -73,5 +74,13 @@ describe('DatabaseService', () => {
     service.saveTabState({ workspaceIds: [beta.id, alpha.id], activeWorkspaceId: beta.id });
     expect(service.getOpenTabs()).toEqual({ workspaces: [beta, alpha], activeWorkspaceId: beta.id });
     database.close();
+  });
+
+  it('restores Worker configuration and ordered events after reopening SQLite', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nightshift-worker-db-')); temporaryDirectories.push(directory);
+    const databasePath = join(directory, 'nightshift.sqlite'); const first = new DatabaseService(databasePath); const workspaces = new WorkspaceRepository(first); const workspace = workspaces.addOrTouch('C:\\projects\\worker', 'worker', true); const workers = new WorkerRepository(first);
+    const worker = workers.create({ id: 'worker-1', workspaceId: workspace.id, title: 'Persistent Worker', agentId: 'claude-code', modelId: 'model', permissionProfile: 'workspace_write', isolationMode: 'direct_workspace', workingDirectory: workspace.rootPath, baseSha: null }); workers.appendEvent(worker.id, 'user', 'First message', { role: 'user' }); workers.appendEvent(worker.id, 'assistant', 'First answer', { role: 'assistant' }); first.close();
+    const reopenedDatabase = new DatabaseService(databasePath); const reopened = new WorkerRepository(reopenedDatabase);
+    expect(reopened.find('worker-1')).toMatchObject({ agentId: 'claude-code', modelId: 'model', permissionProfile: 'workspace_write', isolationMode: 'direct_workspace', workingDirectory: workspace.rootPath }); expect(reopened.listEvents('worker-1').map(({ sequence, content }) => [sequence, content])).toEqual([[0, 'First message'], [1, 'First answer']]); reopenedDatabase.close();
   });
 });
