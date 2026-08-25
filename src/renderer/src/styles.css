@@ -727,21 +727,36 @@ textarea:focus-visible {
 
 .planner-fields {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(2, auto);
   gap: clamp(12px, 4vw, 80px);
   margin-bottom: 8px;
+}
+
+.planner-fields-row {
+  display: grid;
+  gap: clamp(12px, 4vw, 80px);
+}
+
+/* First row: Agent | Model | Execution Mode */
+.planner-fields-row:nth-child(1) {
+  grid-template-columns: 1fr 2fr 1fr;
+}
+
+/* Second row: Priority | Concurrent Runs */
+.planner-fields-row:nth-child(2) {
+  grid-template-columns: repeat(2, 1fr);
 }
 
 .planner-fields label {
   display: block;
 }
 
+/* Make the label visible and style it */
 .planner-fields label > span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .planner-fields select {
@@ -754,6 +769,14 @@ textarea:focus-visible {
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.62), inset 0 1px 0 rgba(255, 255, 255, 0.025);
   color: #f0edf1;
   font-size: 12px;
+}
+
+/* Helper text styling */
+.helper-text {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .planner-fields select:disabled {

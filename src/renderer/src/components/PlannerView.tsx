@@ -138,44 +138,50 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
 
       <form className="planner-composer" onSubmit={(event) => void submitTask(event)}>
         <div className="planner-fields">
-          <label>
-            <span>Agent</span>
-            <select aria-label="Agent" value={requestedAgentId ?? 'auto'} onChange={(event) => {
-              const nextAgentId = event.target.value === 'auto' ? null : event.target.value;
-              setRequestedAgentId(nextAgentId);
-              setRequestedModelId(null);
-            }} disabled={!catalog}>
-              <option value="auto">Auto · {catalog?.defaultAgentId ?? 'indisponible'}</option>
-              {catalog?.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.displayName}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Modèle</span>
-            <select aria-label="Modèle" value={requestedModelId ?? 'auto'} onChange={(event) => setRequestedModelId(event.target.value === 'auto' ? null : event.target.value)} disabled={!catalog}>
-              <option value="auto">Auto · {catalog?.defaultModelId ?? 'indisponible'}</option>
-              {availableModels(catalog, requestedAgentId).map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Priorité</span>
-            <select aria-label="Priorité" value={priority} onChange={(event) => setPriority(Number(event.target.value))}>
-              {[1, 2, 3, 4, 5].map((value) => <option value={value} key={value}>{value}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Exécution</span>
-            <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => setExecutionMode(event.target.value as PlannerExecutionMode)}>
-              <option value="single_agent">Single Agent</option>
-              <option value="sequential_batch">Sequential Batch</option>
-              <option value="delegated_leader" disabled>Delegated Leader · bientôt disponible</option>
-            </select>
-          </label>
-          <label>
-            <span>Runs concurrents</span>
-            <select aria-label="Runs concurrents" value={concurrency} onChange={(event) => void updateConcurrency(Number(event.target.value) as 1 | 2 | 3 | 4)}>
-              {[1, 2, 3, 4].map((value) => <option value={value} key={value}>{value}</option>)}
-            </select>
-          </label>
+          <div className="planner-fields-row">
+            <label>
+              <span>Agent</span>
+              <select aria-label="Agent" value={requestedAgentId ?? 'auto'} onChange={(event) => {
+                const nextAgentId = event.target.value === 'auto' ? null : event.target.value;
+                setRequestedAgentId(nextAgentId);
+                setRequestedModelId(null);
+              }} disabled={!catalog}>
+                <option value="auto">Auto · {catalog?.defaultAgentId ?? 'indisponible'}</option>
+                {catalog?.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.displayName}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Modèle</span>
+              <select aria-label="Modèle" value={requestedModelId ?? 'auto'} onChange={(event) => setRequestedModelId(event.target.value === 'auto' ? null : event.target.value)} disabled={!catalog}>
+                <option value="auto">Auto · {catalog?.defaultModelId ?? 'indisponible'}</option>
+                {availableModels(catalog, requestedAgentId).map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Mode d’exécution</span>
+              <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => setExecutionMode(event.target.value as PlannerExecutionMode)}>
+                <option value="single_agent">Single Agent</option>
+                <option value="sequential_batch">Sequential Batch</option>
+                <option value="delegated_leader" disabled>Delegated Leader · bientôt disponible</option>
+              </select>
+            </label>
+          </div>
+          <div className="planner-fields-row">
+            <label>
+              <span>Priorité</span>
+              <select aria-label="Priorité" value={priority} onChange={(event) => setPriority(Number(event.target.value))}>
+                {[1, 2, 3, 4, 5].map((value) => <option value={value} key={value}>{value}</option>)}
+              </select>
+              <span className="helper-text">1 = la plus haute</span>
+            </label>
+            <label>
+              <span>Runs concurrents</span>
+              <select aria-label="Runs concurrents" value={concurrency} onChange={(event) => void updateConcurrency(Number(event.target.value) as 1 | 2 | 3 | 4)}>
+                {[1, 2, 3, 4].map((value) => <option value={value} key={value}>{value}</option>)}
+              </select>
+              <span className="helper-text">nombre maximal de tâches Planner exécutées simultanément</span>
+            </label>
+          </div>
         </div>
         {executionMode === 'sequential_batch' && <div className="batch-editor" aria-label="Étapes du batch séquentiel">
           {batchSteps.map((step, index) => <div className="batch-step" key={index}>

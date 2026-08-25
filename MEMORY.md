@@ -1,1 +1,2 @@
 - [Fix UI-01: add 0.5px gap between workspace tabs](fix-ui-01.md — Added gap property to .workspace-tabs-scroll to create visual separation)
+- [Planner UI improvements](planner-ui-improvements.md — Improved Planner composer configuration fields for clarity with labels, two-row layout, wider selects, and helper text.)
