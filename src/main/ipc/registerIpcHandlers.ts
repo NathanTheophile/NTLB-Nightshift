@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron';
 
 import {
   IPC_CHANNELS,
@@ -11,12 +11,14 @@ import {
   type WorkspaceTabState,
   type CreateWorkerInput,
 } from '@shared/contracts/ipc';
+import type { RunReviewExportKind } from '@shared/domain/entities';
 
 import type { LauncherService } from '../services/LauncherService';
 import type { PlannerService } from '../services/PlannerService';
 import type { RunService } from '../services/contracts/RunService';
 import type { WorkspaceService } from '../services/WorkspaceService';
 import type { WorkerSessionService } from '../services/contracts/WorkerSessionService';
+import type { RunReviewService } from '../services/RunReviewService';
 
 interface IpcServices {
   appVersion: string;
@@ -24,6 +26,7 @@ interface IpcServices {
   planner: PlannerService;
   plannerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
   runs: RunService;
+  reviews: RunReviewService;
   launcher: LauncherService;
   workers: WorkerSessionService & { createConversation(input: CreateWorkerInput): Promise<IpcContract[typeof IPC_CHANNELS.workersCreate]['response']> };
   workerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.workersSelectionCatalog]['response']>;
@@ -100,6 +103,26 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertRecord(request);
     assertNonEmptyString(request.runId, 'runId');
     return services.runs.requestCancellation(request.runId);
+  });
+  handle(IPC_CHANNELS.runsReview, (request) => { assertRecord(request); assertNonEmptyString(request.runId, 'runId'); return services.reviews.inspect(request.runId); });
+  handle(IPC_CHANNELS.runsFileDiff, (request) => { assertRecord(request); assertNonEmptyString(request.runId, 'runId'); assertSafeRelativePath(request.path); return services.reviews.fileDiff(request.runId, request.path); });
+  handle(IPC_CHANNELS.runsOpenWorktree, (request) => { assertRecord(request); assertNonEmptyString(request.runId, 'runId'); assertWorkspaceTool(request.tool); return services.launcher.openRunWorktreeTool(request.runId, request.tool); });
+  handle(IPC_CHANNELS.runsExportReview, async (request, event) => {
+    assertRecord(request); assertNonEmptyString(request.runId, 'runId'); assertExportKind(request.kind);
+    const defaultPath = services.reviews.suggestedFileName(request.runId, request.kind);
+    const result = await dialog.showSaveDialog(requireWindow(event), { title: 'Export Run review', defaultPath, filters: [{ name: request.kind === 'bundle' ? 'ZIP bundle' : request.kind === 'json' ? 'JSON' : 'Markdown', extensions: [request.kind === 'bundle' ? 'zip' : request.kind === 'json' ? 'json' : 'md'] }] });
+    return result.canceled || !result.filePath ? null : services.reviews.exportTo(request.runId, request.kind, result.filePath);
+  });
+  handle(IPC_CHANNELS.runsPublishCandidate, async (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.runId, 'runId');
+    return services.runs.publishCandidate(request.runId);
+  });
+  handle(IPC_CHANNELS.runsCreateFollowUp, async (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.runId, 'runId');
+    assertNonEmptyString(request.prompt, 'prompt');
+    return services.runs.createFollowUp(request.runId, request.prompt);
   });
   handle(IPC_CHANNELS.workersList, (request) => { assertRecord(request); assertNonEmptyString(request.workspaceId, 'workspaceId'); return services.workers.list(request.workspaceId); });
   handle(IPC_CHANNELS.workersCreate, (request) => { assertCreateWorkerInput(request); return services.workers.createConversation(request); });
@@ -212,10 +235,12 @@ function assertCreateWorkerInput(value: unknown): asserts value is CreateWorkerI
 function assertLaunchRequest(value: unknown): asserts value is LaunchWorkspaceToolRequest {
   assertRecord(value);
   assertNonEmptyString(value.workspaceId, 'workspaceId');
-  if (value.tool !== 'terminal' && value.tool !== 'explorer' && value.tool !== 'ide') {
-    throw new Error('Unsupported workspace tool.');
-  }
+  assertWorkspaceTool(value.tool);
 }
+
+function assertWorkspaceTool(value: unknown): asserts value is 'terminal' | 'explorer' | 'ide' { if (value !== 'terminal' && value !== 'explorer' && value !== 'ide') throw new Error('Unsupported workspace tool.'); }
+function assertExportKind(value: unknown): asserts value is RunReviewExportKind { if (value !== 'markdown' && value !== 'json' && value !== 'bundle') throw new Error('Unsupported Run review export format.'); }
+function assertSafeRelativePath(value: unknown): asserts value is string { assertNonEmptyString(value, 'path'); if (value.includes('\0') || value.startsWith('/') || value.startsWith('\\') || /^[A-Za-z]:/.test(value) || value.split(/[\\/]/).includes('..')) throw new Error('path must be a safe relative Run file path.'); }
 
 function assertWorkspaceTabState(value: unknown): asserts value is WorkspaceTabState {
   assertRecord(value);

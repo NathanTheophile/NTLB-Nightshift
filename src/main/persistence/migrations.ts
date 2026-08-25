@@ -193,4 +193,20 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX run_batch_steps_run_idx ON run_batch_steps(run_id, step_index);
     `,
   },
+  {
+    version: 6,
+    name: 'run_candidate_publication_and_follow_up_provenance',
+    sql: `
+      ALTER TABLE runs ADD COLUMN source_run_id TEXT REFERENCES runs(id) ON DELETE RESTRICT;
+      ALTER TABLE runs ADD COLUMN follow_up_prompt TEXT;
+      ALTER TABLE runs ADD COLUMN candidate_branch_name TEXT;
+      ALTER TABLE runs ADD COLUMN candidate_commit_sha TEXT;
+      ALTER TABLE runs ADD COLUMN candidate_remote_name TEXT;
+      ALTER TABLE runs ADD COLUMN candidate_publish_state TEXT NOT NULL DEFAULT 'not_published'
+        CHECK (candidate_publish_state IN ('not_published', 'publishing', 'published', 'failed'));
+      ALTER TABLE runs ADD COLUMN candidate_published_at TEXT;
+      ALTER TABLE runs ADD COLUMN candidate_failure_reason TEXT;
+      CREATE INDEX runs_source_run_idx ON runs(source_run_id);
+    `,
+  },
 ];

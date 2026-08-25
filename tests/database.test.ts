@@ -13,6 +13,7 @@ import { SettingsRepository } from '../src/main/persistence/repositories/Setting
 import { WorkspaceService } from '../src/main/services/WorkspaceService';
 import { PlannerService } from '../src/main/services/PlannerService';
 import { migrations } from '../src/main/persistence/migrations';
+import { RunRepository } from '../src/main/persistence/repositories/RunRepository';
 
 const temporaryDirectories: string[] = [];
 
@@ -29,11 +30,11 @@ describe('DatabaseService', () => {
     const databasePath = join(directory, 'nightshift.sqlite');
 
     const firstOpen = new DatabaseService(databasePath);
-    expect(firstOpen.schemaVersion()).toBe(5);
+    expect(firstOpen.schemaVersion()).toBe(6);
     firstOpen.close();
 
     const secondOpen = new DatabaseService(databasePath);
-    expect(secondOpen.schemaVersion()).toBe(5);
+    expect(secondOpen.schemaVersion()).toBe(6);
     expect(
       secondOpen
         .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -86,6 +87,19 @@ describe('DatabaseService', () => {
     legacy.prepare("INSERT INTO runs(id, task_id, workspace_id, resolved_agent_id, resolved_model_id, status, created_at) VALUES ('run', 'task', 'workspace', 'claude-code', 'model', 'completed', '2026-08-25T00:00:00.000Z')").run(); legacy.close();
     const migrated = new DatabaseService(databasePath); const tasks = new PlannerTaskRepository(migrated); const runs = migrated.queryOne<{ execution_mode: string }>('SELECT execution_mode FROM runs WHERE id = ?', 'run');
     expect(tasks.findById('task')?.executionMode).toBe('single_agent'); expect(runs?.execution_mode).toBe('single_agent'); migrated.close();
+  });
+
+  it('persists candidate publication state and immutable follow-up provenance', () => {
+    const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\candidate', 'candidate', true);
+    const task = tasks.create({ workspaceId: workspace.id, prompt: 'Implement the candidate.', requestedAgentId: null, requestedModelId: null, priority: 1 });
+    const source = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: 'codex', resolvedModelId: 'model' });
+    runs.setStatus(source.id, 'completed'); runs.setCandidateCommit(source.id, 'nightshift/run/source-candidate', 'candidate-sha');
+    expect(runs.tryBeginCandidatePublish(source.id)).toBe(true); expect(runs.tryBeginCandidatePublish(source.id)).toBe(false);
+    runs.setCandidatePublishFailure(source.id, 'Remote rejected candidate.'); expect(runs.tryBeginCandidatePublish(source.id)).toBe(true);
+    const published = runs.setCandidatePublished(source.id, 'origin');
+    expect(published).toMatchObject({ candidateBranchName: 'nightshift/run/source-candidate', candidateCommitSha: 'candidate-sha', candidateRemoteName: 'origin', candidatePublishState: 'published', candidateFailureReason: null });
+    const followUp = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: source.resolvedAgentId, resolvedModelId: source.resolvedModelId, sourceRunId: source.id, followUpPrompt: 'Correct review issue.' });
+    expect(followUp).toMatchObject({ sourceRunId: source.id, followUpPrompt: 'Correct review issue.', candidatePublishState: 'not_published' }); database.close();
   });
 
   it('persists ordered open tabs without deleting remembered workspaces', () => {
