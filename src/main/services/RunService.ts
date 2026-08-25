@@ -156,7 +156,9 @@ export class RunService implements RunServiceContract {
         const status = await this.delegated.execute({ run, task, worktreePath: worktree.path, adapter, deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', setActive: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), clearActive: () => this.active.delete(run.id) });
         const finalGit = await inspectGit(worktree.path);
         const autonomous = this.runs.findRequired(run.id); this.runs.setAutonomyPhase(run.id, 'terminal'); this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), failure_reason: status === 'blocked' ? autonomous.failureReason ?? 'Delegated Leader blocked autonomous continuation.' : status === 'timed_out' ? 'Run exceeded the hard timeout.' : status === 'cancelled' ? 'Cancelled by user.' : null, validation_status: autonomous.validationStatus ?? 'not_configured', final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
-        this.tasks.setStatus(task.id, taskStatus(status)); this.runs.appendEvent(run.id, 'terminal', { status }); return;
+        this.tasks.setStatus(task.id, taskStatus(status)); this.runs.appendEvent(run.id, 'terminal', { status });
+        if (status === 'completed') await this.publishDelegatedCandidate(run.id);
+        return;
       }
       const result = run.executionMode === 'sequential_batch'
         ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, deadline)
@@ -263,6 +265,18 @@ export class RunService implements RunServiceContract {
       const detail = error instanceof Error ? error.message : String(error); const run = this.runs.find(runId);
       if (run?.candidateCommitSha) this.runs.setCandidatePublishFailure(runId, detail);
       throw error;
+    }
+  }
+  private async publishDelegatedCandidate(runId: string): Promise<void> {
+    try {
+      await this.publishCandidate(runId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (detail === 'Cannot publish a candidate for a Run with no changes.') {
+        this.runs.appendEvent(runId, 'candidate_publish_skipped', { state: 'not_applicable', reason: 'Delegated Leader Run completed without Git changes.' });
+        return;
+      }
+      this.runs.appendEvent(runId, 'candidate_publish_failed', { detail, retryAvailable: true });
     }
   }
   private async executeSingle(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, prompt: string, deadline: number): Promise<AgentExecutionResult> {
