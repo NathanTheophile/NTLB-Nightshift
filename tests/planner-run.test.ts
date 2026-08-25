@@ -65,6 +65,17 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('rejects a stale Delegated Leader task at the Run boundary', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new CompletingAdapter(); const service = fixture.service(adapter, 1_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Stale mode.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] }); service.schedule();
+      const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
+      const blocked = await waitFor(() => service.find(run.id).then((item) => item?.status === 'blocked' ? item : undefined));
+      expect(adapter.starts).toBe(0); expect(blocked.failureReason).toContain('not supported');
+    } finally { await fixture.dispose(); }
+  });
+
   it('cancels the active batch step and does not start later steps', async () => {
     const fixture = await setup();
     try {
@@ -84,6 +95,18 @@ describe('Planner Run vertical slice', () => {
       service.schedule(); const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
       await waitFor(() => service.find(run.id).then((item) => item?.status === 'timed_out' ? item : undefined), 2_000);
       expect(adapter.launches).toBe(1); expect(service.batchSteps(run.id).map((step) => step.status)).toEqual(['timed_out', 'cancelled']);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('shares one timeout budget across all batch steps', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new DelayedThenHangingAdapter(45); const service = fixture.service(adapter, 60);
+      const task = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: ['Finish first.', 'Time out with remaining budget.'] });
+      service.schedule(); const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
+      await waitFor(() => service.find(run.id).then((item) => item?.status === 'timed_out' ? item : undefined), 2_000);
+      await waitFor(() => fixture.tasks.findById(task.id)?.status === 'failed' ? true : undefined);
+      expect(adapter.starts).toBe(2); expect(adapter.cancelled).toBe(1); expect(adapter.cancelledAt! - adapter.secondStartedAt!).toBeLessThan(40);
     } finally { await fixture.dispose(); }
   });
 
@@ -143,6 +166,18 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('keeps batch-step evidence when cancelled during preparation', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new CompletingAdapter(); const delayedWorktrees = new DelayedWorktreeService(fixture.worktreeService); const service = fixture.service(adapter, 5_000, delayedWorktrees);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: ['Never run one.', 'Never run two.'] }); service.schedule();
+      const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]); await delayedWorktrees.waitForStart();
+      expect(service.batchSteps(run.id).map((step) => step.prompt)).toEqual(['Never run one.', 'Never run two.']); await service.requestCancellation(run.id); delayedWorktrees.release();
+      await waitFor(() => service.find(run.id).then((item) => item?.status === 'cancelled' ? item : undefined));
+      expect(adapter.starts).toBe(0); expect(service.batchSteps(run.id).map((step) => step.status)).toEqual(['cancelled', 'cancelled']);
+    } finally { await fixture.dispose(); }
+  });
+
   it('cancels a handle that arrives after cancellation during startRun handoff', async () => {
     const fixture = await setup();
     try {
@@ -177,6 +212,21 @@ class TimeoutThenCompleteAdapter extends CompletingAdapter {
   public cancelled = 0; public launches = 0; private resolve?: (value: AgentExecutionResult) => void;
   public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.launches += 1; if (this.launches > 1) return super.startRun(spec); const handleId = randomUUID(); let resolveCompletion!: (result: AgentExecutionResult) => void; const completion = new Promise<AgentExecutionResult>((resolve) => { resolveCompletion = resolve; }); this.resolve = resolveCompletion; return { handleId, externalSessionId: null, events: [], completion }; }
   public override cancel(): Promise<void> { this.cancelled += 1; this.resolve?.({ handleId: 'timeout', succeeded: false, failureReason: 'cancelled', exitCode: null, signal: 'SIGTERM', externalSessionId: null, events: [], terminalEvent: null, stderr: '' }); return Promise.resolve(); }
+}
+class DelayedThenHangingAdapter extends CompletingAdapter {
+  public cancelled = 0; public secondStartedAt?: number; public cancelledAt?: number; private resolve?: (value: AgentExecutionResult) => void;
+  public constructor(private readonly firstDelayMs: number) { super(); }
+  public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
+    if (this.starts === 1) {
+      const completion = new Promise<AgentExecutionResult>((resolve) => setTimeout(() => resolve({ handleId: 'first', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'first', events: [], terminalEvent: null, stderr: '' }), this.firstDelayMs));
+      return Promise.resolve({ handleId: 'first', externalSessionId: 'first', events: [], completion });
+    }
+    this.secondStartedAt = Date.now();
+    const completion = new Promise<AgentExecutionResult>((resolve) => { this.resolve = resolve; });
+    return Promise.resolve({ handleId: 'second', externalSessionId: 'second', events: [], completion });
+  }
+  public override cancel(): Promise<void> { this.cancelled += 1; this.cancelledAt = Date.now(); this.resolve?.({ handleId: 'second', succeeded: false, failureReason: 'Timed out.', exitCode: null, signal: 'SIGTERM', externalSessionId: 'second', events: [], terminalEvent: null, stderr: '' }); return Promise.resolve(); }
 }
 class DeferredStartAdapter extends CompletingAdapter {
   public cancelled = 0; private resolveStart?: (handle: AgentExecutionHandle) => void; private resolveCompletion?: (result: AgentExecutionResult) => void; private readonly started = deferred<void>();

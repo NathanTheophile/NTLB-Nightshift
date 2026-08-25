@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -11,6 +12,7 @@ import { WorkerRepository } from '../src/main/persistence/repositories/WorkerRep
 import { SettingsRepository } from '../src/main/persistence/repositories/SettingsRepository';
 import { WorkspaceService } from '../src/main/services/WorkspaceService';
 import { PlannerService } from '../src/main/services/PlannerService';
+import { migrations } from '../src/main/persistence/migrations';
 
 const temporaryDirectories: string[] = [];
 
@@ -65,7 +67,25 @@ describe('DatabaseService', () => {
     const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\nightshift-test', 'nightshift-test', true); const planner = new PlannerService(tasks, workspaces);
     expect(() => planner.createTask({ workspaceId: workspace.id, prompt: 'Delegate.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] })).toThrow('not available yet');
     expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: [' '] })).toThrow('non-empty ordered steps');
+    expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: Array.from({ length: 33 }, () => 'Step') })).toThrow('between 1 and 32');
     database.close();
+  });
+
+  it('uses the first batch step as the title when shared context is empty', () => {
+    const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\nightshift-test', 'nightshift-test', true);
+    const task = tasks.create({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: ['Inspect the serialized run evidence.', 'Do the follow-up.'] });
+    expect(task.title).toBe('Inspect the serialized run evidence.'); expect(tasks.batchSteps(task.id)).toEqual(['Inspect the serialized run evidence.', 'Do the follow-up.']); database.close();
+  });
+
+  it('migrates real pre-v5 Tasks and Runs to Single Agent', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nightshift-pre-v5-')); temporaryDirectories.push(directory); const databasePath = join(directory, 'nightshift.sqlite'); const legacy = new DatabaseSync(databasePath);
+    legacy.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);');
+    migrations.filter((migration) => migration.version < 5).forEach((migration) => { legacy.exec(migration.sql); legacy.prepare('INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)').run(migration.version, migration.name, '2026-08-25T00:00:00.000Z'); });
+    legacy.prepare("INSERT INTO workspaces(id, root_path, display_name, is_git, created_at, last_opened_at) VALUES ('workspace', 'C:\\legacy', 'legacy', 1, '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z')").run();
+    legacy.prepare("INSERT INTO tasks(id, workspace_id, prompt, title, priority, status, visible_in_planner, created_at, updated_at) VALUES ('task', 'workspace', 'Legacy task', 'Legacy task', 1, 'completed', 1, '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z')").run();
+    legacy.prepare("INSERT INTO runs(id, task_id, workspace_id, resolved_agent_id, resolved_model_id, status, created_at) VALUES ('run', 'task', 'workspace', 'claude-code', 'model', 'completed', '2026-08-25T00:00:00.000Z')").run(); legacy.close();
+    const migrated = new DatabaseService(databasePath); const tasks = new PlannerTaskRepository(migrated); const runs = migrated.queryOne<{ execution_mode: string }>('SELECT execution_mode FROM runs WHERE id = ?', 'run');
+    expect(tasks.findById('task')?.executionMode).toBe('single_agent'); expect(runs?.execution_mode).toBe('single_agent'); migrated.close();
   });
 
   it('persists ordered open tabs without deleting remembered workspaces', () => {

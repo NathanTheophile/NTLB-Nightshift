@@ -38,7 +38,9 @@ export class PlannerTaskRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
     const normalizedPrompt = input.prompt.trim();
-    const title = normalizedPrompt.split(/\r?\n/, 1)[0]?.slice(0, 96) ?? normalizedPrompt.slice(0, 96);
+    const firstStep = input.batchSteps?.[0]?.trim() ?? '';
+    const titleSource = normalizedPrompt || ((input.executionMode ?? 'single_agent') === 'sequential_batch' ? firstStep : '');
+    const title = titleSource.split(/\r?\n/, 1)[0]?.slice(0, 96) ?? titleSource.slice(0, 96);
 
     this.database.execute(
       `INSERT INTO tasks(
