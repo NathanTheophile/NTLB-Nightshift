@@ -81,6 +81,17 @@ export class PlannerTaskRepository {
     return row ? mapPlannerTask(row) : undefined;
   }
 
+  /** Claims the canonical queue head before any asynchronous Run preparation begins. */
+  public claimNextQueued(): PlannerTask | undefined {
+    const task = this.nextQueued();
+    if (!task) return undefined;
+    const changed = this.database.execute(
+      "UPDATE tasks SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'",
+      new Date().toISOString(), task.id,
+    ).changes;
+    return changed === 1 ? this.findRequired(task.id) : undefined;
+  }
+
   public batchSteps(taskId: string): string[] {
     return this.database.queryAll<{ prompt: string }>('SELECT prompt FROM planner_batch_steps WHERE task_id = ? ORDER BY step_index', taskId).map((row) => row.prompt);
   }

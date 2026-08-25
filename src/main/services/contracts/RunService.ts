@@ -14,6 +14,8 @@ export interface RunService {
   list(workspaceId: string): Run[];
   events(runId: string, kind?: RunEventKind, cursor?: number | null, limit?: number): RunEventPage;
   batchSteps(runId: string): BatchStep[];
+  concurrencyLimit(): number;
+  setConcurrencyLimit(limit: number): number;
   schedule(): void;
   requestCancellation(runId: string): Promise<Run>;
   publishCandidate(runId: string): Promise<Run>;

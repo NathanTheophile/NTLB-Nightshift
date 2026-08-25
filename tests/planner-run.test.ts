@@ -188,6 +188,27 @@ describe('Planner Run vertical slice', () => {
       expect(adapter.cancelled).toBe(1); expect(cancelled.status).toBe('cancelled');
     } finally { await fixture.dispose(); }
   });
+
+  it('fills only configured slots in priority/FIFO order and releases one slot per completion', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new ControlledAdapter(); const service = fixture.service(adapter, 5_000);
+      service.setConcurrencyLimit(2);
+      const low = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'low', requestedAgentId: null, requestedModelId: null, priority: 3 });
+      const first = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'first', requestedAgentId: null, requestedModelId: null, priority: 1 });
+      const second = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'second', requestedAgentId: null, requestedModelId: null, priority: 1 });
+      service.schedule(); service.schedule();
+      await waitFor(() => adapter.starts === 2 ? true : undefined);
+      expect(fixture.tasks.findById(low.id)?.status).toBe('queued');
+      expect(fixture.tasks.findById(first.id)?.status).toBe('running');
+      expect(fixture.tasks.findById(second.id)?.status).toBe('running');
+      expect(new Set(adapter.workingDirectories).size).toBe(2);
+      adapter.completeNext();
+      await waitFor(() => adapter.starts === 3 ? true : undefined);
+      expect(fixture.tasks.findById(low.id)?.status).toBe('running');
+      adapter.completeAll();
+    } finally { await fixture.dispose(); }
+  });
 });
 
 const setup = async () => {
@@ -213,6 +234,19 @@ class TimeoutThenCompleteAdapter extends CompletingAdapter {
   public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.launches += 1; if (this.launches > 1) return super.startRun(spec); const handleId = randomUUID(); let resolveCompletion!: (result: AgentExecutionResult) => void; const completion = new Promise<AgentExecutionResult>((resolve) => { resolveCompletion = resolve; }); this.resolve = resolveCompletion; return { handleId, externalSessionId: null, events: [], completion }; }
   public override cancel(): Promise<void> { this.cancelled += 1; this.resolve?.({ handleId: 'timeout', succeeded: false, failureReason: 'cancelled', exitCode: null, signal: 'SIGTERM', externalSessionId: null, events: [], terminalEvent: null, stderr: '' }); return Promise.resolve(); }
 }
+class ControlledAdapter extends CompletingAdapter {
+  private readonly completions: Array<(result: AgentExecutionResult) => void> = [];
+  public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
+    let resolveCompletion!: (result: AgentExecutionResult) => void;
+    const completion = new Promise<AgentExecutionResult>((resolve) => { resolveCompletion = resolve; });
+    this.completions.push(resolveCompletion);
+    return { handleId: randomUUID(), externalSessionId: null, events: [], completion };
+  }
+  public completeNext(): void { this.completions.shift()?.(completedResult()); }
+  public completeAll(): void { while (this.completions.length) this.completeNext(); }
+}
+const completedResult = (): AgentExecutionResult => ({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' });
 class DelayedThenHangingAdapter extends CompletingAdapter {
   public cancelled = 0; public secondStartedAt?: number; public cancelledAt?: number; private resolve?: (value: AgentExecutionResult) => void;
   public constructor(private readonly firstDelayMs: number) { super(); }
