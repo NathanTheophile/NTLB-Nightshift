@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import type { PlannerTask, PlannerTaskStatus, Workspace } from '@shared/domain/entities';
+import type { PlannerSelectionCatalog } from '@shared/contracts/ipc';
 
 import { assets } from '../assets';
 import { EmptyState } from './EmptyState';
@@ -23,26 +24,27 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
   const [tasks, setTasks] = useState<PlannerTask[]>([]);
   const [prompt, setPrompt] = useState('');
   const [priority, setPriority] = useState(1);
+  const [catalog, setCatalog] = useState<PlannerSelectionCatalog | null>(null);
+  const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
+  const [requestedModelId, setRequestedModelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void window.nightShift.planner
-      .listTasks(workspace.id)
-      .then((persistedTasks) => {
-        if (active) {
-          setTasks(persistedTasks);
-        }
-      })
-      .catch((error: unknown) => onError(messageFrom(error)))
-      .finally(() => {
-        if (active) {
-          setLoading(false);
-        }
-      });
+    const refresh = (): void => {
+      void window.nightShift.planner.listTasks(workspace.id).then((persistedTasks) => {
+        if (active) setTasks(persistedTasks);
+      }).catch((error: unknown) => onError(messageFrom(error))).finally(() => { if (active) setLoading(false); });
+    };
+    refresh();
+    void window.nightShift.planner.selectionCatalog().then((value) => {
+      if (active) setCatalog(value);
+    }).catch((error: unknown) => onError(messageFrom(error)));
+    const interval = window.setInterval(refresh, 1_500);
     return () => {
       active = false;
+      window.clearInterval(interval);
     };
   }, [onError, workspace.id]);
 
@@ -57,8 +59,8 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
       const task = await window.nightShift.planner.createTask({
         workspaceId: workspace.id,
         prompt,
-        requestedAgentId: null,
-        requestedModelId: null,
+        requestedAgentId,
+        requestedModelId,
         priority,
       });
       setTasks((current) => [...current, task].sort(compareTasks));
@@ -87,7 +89,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
           <EmptyState
             eyebrow="PLANNER LOCAL"
             title="Aucune tâche en attente"
-            detail="Créez une intention de travail. Elle sera persistée maintenant, mais ne sera pas exécutée avant le prochain jalon FCC / Runs."
+            detail="Créez une intention de travail. NightShift l’exécutera dans un worktree Git isolé."
           />
         )}
         {tasks.map((task, index) => (
@@ -98,8 +100,8 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
                 <strong>{task.title}</strong>
               </div>
               <div className="task-metadata">
-                <span>Agent Auto</span>
-                <span>Modèle Auto</span>
+                <span>{task.requestedAgentId ? `Agent ${task.requestedAgentId}` : 'Agent Auto'}</span>
+                <span>{task.requestedModelId ? `Modèle ${task.requestedModelId}` : 'Modèle Auto'}</span>
                 <span className={`priority priority-${Math.min(task.priority, 4)}`}>Priorité {task.priority}</span>
                 <span>Persistée localement</span>
               </div>
@@ -124,14 +126,20 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
         <div className="planner-fields">
           <label>
             <span>Agent</span>
-            <select aria-label="Agent" value="auto" disabled>
-              <option value="auto">Auto · prochain jalon</option>
+            <select aria-label="Agent" value={requestedAgentId ?? 'auto'} onChange={(event) => {
+              const nextAgentId = event.target.value === 'auto' ? null : event.target.value;
+              setRequestedAgentId(nextAgentId);
+              setRequestedModelId(null);
+            }} disabled={!catalog}>
+              <option value="auto">Auto · {catalog?.defaultAgentId ?? 'indisponible'}</option>
+              {catalog?.agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.displayName}</option>)}
             </select>
           </label>
           <label>
             <span>Modèle</span>
-            <select aria-label="Modèle" value="auto" disabled>
-              <option value="auto">Auto · FCC non connecté</option>
+            <select aria-label="Modèle" value={requestedModelId ?? 'auto'} onChange={(event) => setRequestedModelId(event.target.value === 'auto' ? null : event.target.value)} disabled={!catalog}>
+              <option value="auto">Auto · {catalog?.defaultModelId ?? 'indisponible'}</option>
+              {availableModels(catalog, requestedAgentId).map((model) => <option value={model.id} key={model.id}>{model.displayName}</option>)}
             </select>
           </label>
           <label>
@@ -152,7 +160,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             {saving ? 'Enregistrement…' : 'Ajouter à la file'}
           </button>
         </div>
-        <p className="runtime-note">La file est persistée. Aucun agent ne sera lancé dans ce bootstrap.</p>
+        <p className="runtime-note">Une seule tâche Planner s’exécute à la fois, dans un worktree isolé.</p>
       </form>
     </section>
   );
@@ -171,3 +179,8 @@ const relativeTime = (timestamp: string): string => {
 
 const messageFrom = (error: unknown): string =>
   error instanceof Error ? error.message : 'NightShift could not load Planner data.';
+
+const availableModels = (catalog: PlannerSelectionCatalog | null, agentId: string | null) => {
+  if (!catalog) return [];
+  return catalog.modelsByAgent[agentId ?? catalog.defaultAgentId] ?? [];
+};

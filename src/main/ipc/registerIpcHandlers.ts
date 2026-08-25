@@ -13,12 +13,15 @@ import {
 
 import type { LauncherService } from '../services/LauncherService';
 import type { PlannerService } from '../services/PlannerService';
+import type { RunService } from '../services/contracts/RunService';
 import type { WorkspaceService } from '../services/WorkspaceService';
 
 interface IpcServices {
   appVersion: string;
   workspaces: WorkspaceService;
   planner: PlannerService;
+  plannerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
+  runs: RunService;
   launcher: LauncherService;
 }
 
@@ -68,6 +71,26 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertRecord(request);
     assertNonEmptyString(request.taskId, 'taskId');
     return services.planner.archiveTask(request.taskId);
+  });
+
+  handle(IPC_CHANNELS.plannerSelectionCatalog, () => services.plannerSelectionCatalog());
+
+  handle(IPC_CHANNELS.runsList, (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.workspaceId, 'workspaceId');
+    return services.runs.list(request.workspaceId);
+  });
+
+  handle(IPC_CHANNELS.runsEvents, (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.runId, 'runId');
+    return services.runs.events(request.runId);
+  });
+
+  handle(IPC_CHANNELS.runsCancel, async (request) => {
+    assertRecord(request);
+    assertNonEmptyString(request.runId, 'runId');
+    return services.runs.requestCancellation(request.runId);
   });
 
   handle(IPC_CHANNELS.launcherOpenWorkspaceTool, async (request) => {

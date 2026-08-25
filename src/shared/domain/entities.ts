@@ -57,7 +57,19 @@ export interface Run {
   resultSummary: string | null;
   failureReason: string | null;
   validationStatus: string | null;
+  externalSessionId: string | null;
+  finalHeadSha: string | null;
+  finalGitState: string | null;
   createdAt: IsoTimestamp;
+}
+
+export interface RunEvent {
+  id: EntityId;
+  runId: EntityId;
+  sequence: number;
+  timestamp: IsoTimestamp;
+  eventType: string;
+  payload: unknown;
 }
 
 export type WorkerStatus = 'idle' | 'starting' | 'active' | 'waiting_for_user' | 'terminated' | 'error';

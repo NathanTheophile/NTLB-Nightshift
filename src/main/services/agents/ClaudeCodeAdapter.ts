@@ -19,6 +19,7 @@ import { ClaudeStreamJsonParser, type ClaudeStreamEvent } from './claude/ClaudeS
 
 const adapterId = 'claude-code';
 const launcherCommand = 'fcc-claude';
+const validatedPlannerModels = new Set(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
 
 export interface ClaudeCodeAdapterOptions {
   environment?: NodeJS.ProcessEnv;
@@ -64,6 +65,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       workerValidated: false,
       renderMode: 'structured',
     };
+  }
+
+  public supportsPlannerModel(modelId: string): boolean {
+    return validatedPlannerModels.has(modelId);
   }
 
   public async detect(): Promise<AgentDescriptor> {
@@ -125,6 +130,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       if (parser.sessionId && handleReference.current) {
         handleReference.current.externalSessionId = parser.sessionId;
       }
+      spec.onProtocolEvent?.(protocolEvents[protocolEvents.length - 1]!);
     };
     const unsubscribe = this.supervisor.subscribe(handleId, (event) => {
       if (isStdout(event)) {

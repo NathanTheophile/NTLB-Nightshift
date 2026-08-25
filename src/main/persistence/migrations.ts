@@ -143,4 +143,13 @@ export const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    name: 'run_execution_evidence',
+    sql: `
+      ALTER TABLE runs ADD COLUMN external_session_id TEXT;
+      ALTER TABLE runs ADD COLUMN final_head_sha TEXT;
+      ALTER TABLE runs ADD COLUMN final_git_state TEXT;
+    `,
+  },
 ];

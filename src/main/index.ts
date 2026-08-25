@@ -6,13 +6,19 @@ import { app, BrowserWindow } from 'electron';
 import { registerIpcHandlers } from './ipc/registerIpcHandlers';
 import { DatabaseService } from './persistence/DatabaseService';
 import { PlannerTaskRepository } from './persistence/repositories/PlannerTaskRepository';
+import { RunRepository } from './persistence/repositories/RunRepository';
 import { SettingsRepository } from './persistence/repositories/SettingsRepository';
 import { WorkspaceRepository } from './persistence/repositories/WorkspaceRepository';
 import { LauncherService } from './services/LauncherService';
 import { PlannerService } from './services/PlannerService';
+import { RunService } from './services/RunService';
+import { GitWorktreeService } from './services/GitWorktreeService';
 import { WindowsProcessSupervisor } from './services/WindowsProcessSupervisor';
 import { WorkspaceService } from './services/WorkspaceService';
 import { ClaudeCodeAdapter } from './services/agents/ClaudeCodeAdapter';
+import { CodexAdapter } from './services/agents/CodexAdapter';
+import { AgentRegistry } from './services/AgentRegistry';
+import type { AgentAdapter } from './services/contracts/AgentAdapter';
 import type { FccHealth } from './services/contracts/FccGateway';
 import { FccRuntimeManager } from './services/runtime/FccRuntimeManager';
 import { LocalFccGateway } from './services/runtime/LocalFccGateway';
@@ -25,6 +31,8 @@ let shutdownStarted = false;
 interface RuntimeContext {
   fccGateway: LocalFccGateway;
   claudeCode: ClaudeCodeAdapter;
+  codex: CodexAdapter;
+  agentRegistry: AgentRegistry;
   availability: Promise<FccHealth>;
 }
 
@@ -82,13 +90,19 @@ void app.whenReady().then(() => {
   const workspaces = new WorkspaceRepository(database);
   const tasks = new PlannerTaskRepository(database);
   const settings = new SettingsRepository(database);
+  const runs = new RunRepository(database);
   const processSupervisor = new WindowsProcessSupervisor();
   const fccRuntime = new FccRuntimeManager({ supervisor: processSupervisor });
   const fccGateway = new LocalFccGateway(fccRuntime);
   const availability = fccGateway.ensureAvailable();
+  const claudeCode = new ClaudeCodeAdapter(processSupervisor, fccGateway);
+  const codex = new CodexAdapter(processSupervisor, fccGateway);
+  const agentRegistry = new AgentRegistry([claudeCode, codex]);
   runtime = {
     fccGateway,
-    claudeCode: new ClaudeCodeAdapter(processSupervisor, fccGateway),
+    claudeCode,
+    codex,
+    agentRegistry,
     availability,
   };
 
@@ -104,12 +118,31 @@ void app.whenReady().then(() => {
     console.error(`[FCC] Runtime startup failed: ${detail}`);
   });
 
+  const runService = new RunService(
+    runs,
+    tasks,
+    workspaces,
+    new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
+    new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
+    { agentId: 'claude-code', modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs: 30 * 60_000 },
+  );
+
   registerIpcHandlers({
     appVersion: app.getVersion(),
     workspaces: new WorkspaceService(workspaces, settings),
-    planner: new PlannerService(tasks, workspaces),
+    planner: new PlannerService(tasks, workspaces, runService),
+    plannerSelectionCatalog: async () => {
+      const activeRuntime = runtime;
+      if (!activeRuntime) throw new Error('NightShift runtime is unavailable.');
+      await activeRuntime.availability;
+      await activeRuntime.agentRegistry.refresh();
+      const catalog = activeRuntime.agentRegistry.plannerCatalog(await activeRuntime.fccGateway.listModels());
+      return { ...catalog, defaultAgentId: 'claude-code', defaultModelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b' };
+    },
+    runs: runService,
     launcher: new LauncherService(settings, workspaces),
   });
+  runService.schedule();
 
   createWindow();
   app.on('activate', () => {

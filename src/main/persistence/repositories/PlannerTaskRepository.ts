@@ -58,6 +58,24 @@ export class PlannerTaskRepository {
     return this.findRequired(id);
   }
 
+  public findById(id: string): PlannerTask | undefined {
+    const row = this.database.queryOne<PlannerTaskRow>('SELECT * FROM tasks WHERE id = ?', id);
+    return row ? mapPlannerTask(row) : undefined;
+  }
+
+  public nextQueued(): PlannerTask | undefined {
+    const row = this.database.queryOne<PlannerTaskRow>(
+      "SELECT * FROM tasks WHERE status = 'queued' AND visible_in_planner = 1 ORDER BY priority ASC, created_at ASC LIMIT 1",
+    );
+    return row ? mapPlannerTask(row) : undefined;
+  }
+
+  public setStatus(taskId: string, status: PlannerTaskStatus): PlannerTask {
+    this.findRequired(taskId);
+    this.database.execute('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?', status, new Date().toISOString(), taskId);
+    return this.findRequired(taskId);
+  }
+
   public archiveCompleted(taskId: string): PlannerTask {
     const task = this.findRequired(taskId);
     if (task.status !== 'completed') {

@@ -1,4 +1,4 @@
-import type { PlannerTask, Workspace } from '../domain/entities';
+import type { AgentDescriptor, ModelDescriptor, PlannerTask, Run, RunEvent, Workspace } from '../domain/entities';
 
 export type WorkspaceEntryKind = 'directory' | 'file' | 'symlink';
 
@@ -26,6 +26,13 @@ export interface CreatePlannerTaskInput {
   requestedAgentId: string | null;
   requestedModelId: string | null;
   priority: number;
+}
+
+export interface PlannerSelectionCatalog {
+  agents: readonly AgentDescriptor[];
+  modelsByAgent: Readonly<Record<string, readonly ModelDescriptor[]>>;
+  defaultAgentId: string;
+  defaultModelId: string;
 }
 
 export interface LauncherConfiguration {
@@ -65,6 +72,10 @@ export const IPC_CHANNELS = {
   plannerListTasks: 'planner:list-tasks',
   plannerCreateTask: 'planner:create-task',
   plannerArchiveTask: 'planner:archive-task',
+  plannerSelectionCatalog: 'planner:selection-catalog',
+  runsList: 'runs:list',
+  runsEvents: 'runs:events',
+  runsCancel: 'runs:cancel',
   launcherOpenWorkspaceTool: 'launcher:open-workspace-tool',
   launcherConfigureIde: 'launcher:configure-ide',
   windowMinimize: 'window:minimize',
@@ -83,6 +94,10 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerListTasks]: { request: { workspaceId: string }; response: PlannerTask[] };
   [IPC_CHANNELS.plannerCreateTask]: { request: CreatePlannerTaskInput; response: PlannerTask };
   [IPC_CHANNELS.plannerArchiveTask]: { request: { taskId: string }; response: PlannerTask };
+  [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
+  [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
+  [IPC_CHANNELS.runsEvents]: { request: { runId: string }; response: RunEvent[] };
+  [IPC_CHANNELS.runsCancel]: { request: { runId: string }; response: Run };
   [IPC_CHANNELS.launcherOpenWorkspaceTool]: { request: LaunchWorkspaceToolRequest; response: LaunchResult };
   [IPC_CHANNELS.launcherConfigureIde]: { request: undefined; response: LauncherConfiguration };
   [IPC_CHANNELS.windowMinimize]: { request: undefined; response: undefined };
@@ -109,6 +124,12 @@ export interface NightShiftApi {
     listTasks: (workspaceId: string) => Promise<PlannerTask[]>;
     createTask: (input: CreatePlannerTaskInput) => Promise<PlannerTask>;
     archiveTask: (taskId: string) => Promise<PlannerTask>;
+    selectionCatalog: () => Promise<PlannerSelectionCatalog>;
+  };
+  runs: {
+    list: (workspaceId: string) => Promise<Run[]>;
+    events: (runId: string) => Promise<RunEvent[]>;
+    cancel: (runId: string) => Promise<Run>;
   };
   launcher: {
     openWorkspaceTool: (request: LaunchWorkspaceToolRequest) => Promise<LaunchResult>;
