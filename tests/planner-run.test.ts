@@ -30,6 +30,14 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('persists an explicit Codex and model selection on the Task', async () => {
+    const fixture = await setup();
+    try {
+      const task = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Use Codex.', requestedAgentId: 'codex', requestedModelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', priority: 1 });
+      expect(task).toMatchObject({ requestedAgentId: 'codex', requestedModelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b' });
+    } finally { await fixture.dispose(); }
+  });
+
   it('runs in a Git worktree, preserves the source tree, and persists structured evidence', async () => {
     const fixture = await setup();
     try {
@@ -44,7 +52,7 @@ describe('Planner Run vertical slice', () => {
       expect(await readFile(join(completed.worktreePath!, 'marker.txt'), 'utf8')).toBe('changed by planner\n');
       expect(completed.status).toBe('completed'); expect(completed.baseSha).toBeTruthy(); expect(completed.finalHeadSha).toBeTruthy(); expect(completed.externalSessionId).toBe('session-test');
       expect(completed.finalGitState).toContain('marker.txt');
-      expect(service.events(completed.id).map((event) => event.eventType)).toContain('claude_protocol');
+      expect(service.events(completed.id).map((event) => event.eventType)).toContain('agent_protocol');
       expect(fixture.tasks.findById(task.id)?.status).toBe('completed');
     } finally { await fixture.dispose(); }
   });

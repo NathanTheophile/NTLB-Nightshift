@@ -32,6 +32,7 @@ const api: NightShiftApi = {
     listTasks: (workspaceId) => invoke(IPC_CHANNELS.plannerListTasks, { workspaceId }),
     createTask: (input) => invoke(IPC_CHANNELS.plannerCreateTask, input),
     archiveTask: (taskId) => invoke(IPC_CHANNELS.plannerArchiveTask, { taskId }),
+    selectionCatalog: () => invoke(IPC_CHANNELS.plannerSelectionCatalog, undefined),
   },
   runs: {
     list: (workspaceId) => invoke(IPC_CHANNELS.runsList, { workspaceId }),
