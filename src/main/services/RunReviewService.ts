@@ -32,7 +32,7 @@ export class RunReviewService {
       git(worktree, ['rev-parse', '--verify', 'HEAD']),
       git(worktree, ['status', '--porcelain=v1']),
       git(worktree, ['diff', '--name-status', '--find-renames', run.baseSha]),
-      git(worktree, ['diff', '--numstat', '--find-renames', run.baseSha]),
+      git(worktree, ['diff', '--numstat', '-z', '--find-renames', run.baseSha]),
       git(worktree, ['ls-files', '--others', '--exclude-standard', '-z']),
     ]);
     review.worktreeHead = head.exitCode === 0 ? head.stdout.trim() : null;
@@ -80,12 +80,7 @@ export class RunReviewService {
 
   private async changedFiles(worktree: string, changes: string, numstat: string, untracked: string): Promise<RunChangedFile[]> {
     const result = new Map<string, RunChangedFile>();
-    const counts = new Map<string, { additions: number | null; deletions: number | null }>();
-    for (const line of numstat.split(/\r?\n/)) {
-      const [added, deleted, path, renamedPath] = line.split('\t');
-      const finalPath = renamedPath ?? path;
-      if (finalPath) counts.set(finalPath, { additions: added === '-' ? null : Number(added), deletions: deleted === '-' ? null : Number(deleted) });
-    }
+    const counts = parseNumstat(numstat);
     for (const line of changes.split(/\r?\n/)) {
       if (!line) continue;
       const [code, path, renamedPath] = line.split('\t'); if (!code || !path) continue;
@@ -187,6 +182,20 @@ const readPrefix = async (path: string, length: number): Promise<Buffer> => { co
 const isInside = (root: string, target: string): boolean => target === resolve(root) || target.startsWith(`${resolve(root)}${sep}`);
 const safeChild = (root: string, path: string): string | undefined => { if (!path || isAbsolute(path)) return undefined; const target = resolve(root, path); return isInside(root, target) ? target : undefined; };
 const safeRegularFile = async (root: string, path: string): Promise<string | undefined> => { const target = safeChild(root, path); if (!target) return undefined; const direct = await lstat(target); if (!direct.isFile() || direct.isSymbolicLink()) return undefined; const canonical = await realpath(target); return isInside(root, canonical) ? canonical : undefined; };
+const parseNumstat = (output: string): Map<string, { additions: number | null; deletions: number | null }> => {
+  const result = new Map<string, { additions: number | null; deletions: number | null }>();
+  const fields = output.split('\0');
+  for (let index = 0; index < fields.length - 1;) {
+    const record = fields[index++];
+    if (!record) continue;
+    const firstTab = record.indexOf('\t'); const secondTab = record.indexOf('\t', firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const added = record.slice(0, firstTab); const deleted = record.slice(firstTab + 1, secondTab); let path = record.slice(secondTab + 1);
+    if (!path) { index += 1; path = fields[index++] ?? ''; }
+    if (path) result.set(path, { additions: added === '-' ? null : Number(added), deletions: deleted === '-' ? null : Number(deleted) });
+  }
+  return result;
+};
 const isBinary = (value: Buffer): boolean => value.includes(0);
 const git = (cwd: string, args: string[], maxBytes = MAX_GIT_OUTPUT): Promise<{ stdout: string; exitCode: number; truncated: boolean }> => new Promise((done, reject) => { const child = spawn('git', ['-C', cwd, ...args], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = ''; let size = 0; let truncated = false; child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { size += Buffer.byteLength(chunk); if (size <= maxBytes) stdout += chunk; else truncated = true; }); child.once('error', reject); child.once('close', (exitCode) => done({ stdout, exitCode: exitCode ?? -1, truncated })); });
 const markdown = (review: RunReview): string => `# NightShift Run Review\n\n- Run: ${review.run.id}\n- Status: ${review.run.status}\n- Mode: ${review.run.executionMode}\n- Agent / model: ${review.run.resolvedAgentId} / ${review.run.resolvedModelId}\n- Session: ${review.run.externalSessionId ?? '—'}\n- Base SHA: ${review.run.baseSha ?? '—'}\n- Worktree HEAD: ${review.worktreeHead ?? review.run.finalHeadSha ?? '—'}\n- Validation: ${review.validationStatus ?? '—'}\n\n## Result\n\n${review.result ?? '—'}\n\n## Failure\n\n${review.failure ?? '—'}\n\n## Validation commands\n\n${review.validationCommands.length ? review.validationCommands.map((command) => `- ${command.status}: ${command.command} (${command.exitCode ?? '—'})`).join('\n') : '—'}\n\n## Changed files\n\n${review.changedFiles.length ? review.changedFiles.map((file) => `- ${file.kind}: \`${file.path}\`${file.previousPath ? ` (from \`${file.previousPath}\`)` : ''}${file.note ? ` — ${file.note}` : ''}`).join('\n') : 'No changes detected.'}\n\n## Batch steps\n\n${review.batchSteps.length ? review.batchSteps.map((step) => `- ${step.stepIndex + 1}. ${step.status}: ${step.prompt}`).join('\n') : '—'}\n\n## Git status\n\n\`\`\`text\n${review.gitStatus}\`\`\`\n`;
