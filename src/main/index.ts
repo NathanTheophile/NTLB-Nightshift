@@ -25,6 +25,8 @@ import { FccRuntimeManager } from './services/runtime/FccRuntimeManager';
 import { LocalFccGateway } from './services/runtime/LocalFccGateway';
 import { WorkerSessionService } from './services/WorkerSessionService';
 import { RunReviewService } from './services/RunReviewService';
+import { AdapterReviewerRunner, ReviewIntegrationService } from './services/ReviewIntegrationService';
+import { RunIntegrationReviewRepository } from './persistence/repositories/RunIntegrationReviewRepository';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
 let database: DatabaseService | undefined;
@@ -139,6 +141,7 @@ void app.whenReady().then(() => {
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
   const reviewService = new RunReviewService(runs, workspaces);
+  const reviewIntegration = new ReviewIntegrationService(runs, workspaces, new RunIntegrationReviewRepository(database), new AdapterReviewerRunner(new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]])), join(app.getPath('userData'), 'worktrees'));
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
@@ -154,6 +157,7 @@ void app.whenReady().then(() => {
     },
     runs: runService,
     reviews: reviewService,
+    reviewIntegration,
     workers: workerService,
     workerSelectionCatalog: async () => {
       const activeRuntime = runtime;

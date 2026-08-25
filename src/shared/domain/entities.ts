@@ -63,6 +63,29 @@ export type ValidationStatus = 'not_configured' | 'running' | 'passed' | 'failed
 export type ValidationCommandStatus = 'running' | 'passed' | 'failed' | 'interrupted';
 
 export type CandidatePublishState = 'not_published' | 'publishing' | 'published' | 'failed';
+export type ReviewerVerdict = 'PASS' | 'FAIL' | 'NEEDS_ATTENTION';
+export type IntegrationStatus = 'not_started' | 'integrating' | 'integrated' | 'needs_attention' | 'rejected';
+
+export interface RunIntegrationReview {
+  id: EntityId;
+  runId: EntityId;
+  candidateSha: string;
+  targetDevSha: string;
+  reviewerAgentId: string;
+  reviewerModelId: string;
+  verdict: ReviewerVerdict;
+  summary: string;
+  findings: string;
+  createdAt: IsoTimestamp;
+  reviewedAt: IsoTimestamp;
+  staleAt: IsoTimestamp | null;
+  staleReason: string | null;
+  integrationStatus: IntegrationStatus;
+  integrationCommitSha: string | null;
+  integrationValidation: string | null;
+  integrationFailureReason: string | null;
+  integratedAt: IsoTimestamp | null;
+}
 
 export interface Run {
   id: EntityId;

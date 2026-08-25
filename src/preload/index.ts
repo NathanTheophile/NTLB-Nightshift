@@ -47,6 +47,9 @@ const api: NightShiftApi = {
     cancel: (runId) => invoke(IPC_CHANNELS.runsCancel, { runId }),
     publishCandidate: (runId) => invoke(IPC_CHANNELS.runsPublishCandidate, { runId }),
     createFollowUp: (runId, prompt) => invoke(IPC_CHANNELS.runsCreateFollowUp, { runId, prompt }),
+    reviewIntegration: (runId) => invoke(IPC_CHANNELS.runsReviewIntegration, { runId }),
+    requestReview: (runId) => invoke(IPC_CHANNELS.runsRequestReview, { runId }),
+    integrateReview: (reviewId) => invoke(IPC_CHANNELS.runsIntegrateReview, { reviewId }),
   },
   workers: {
     list: (workspaceId) => invoke(IPC_CHANNELS.workersList, { workspaceId }),
