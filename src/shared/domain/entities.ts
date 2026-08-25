@@ -86,9 +86,21 @@ export interface WorkerConversation {
   permissionProfile: WorkerPermissionProfile;
   isolationMode: IsolationMode;
   externalSessionId: string | null;
+  workingDirectory: string;
+  baseSha: string | null;
   status: WorkerStatus;
   createdAt: IsoTimestamp;
   updatedAt: IsoTimestamp;
+}
+
+export interface WorkerEvent {
+  id: EntityId;
+  workerId: EntityId;
+  sequence: number;
+  timestamp: IsoTimestamp;
+  roleOrType: string;
+  content: string | null;
+  payload: unknown;
 }
 
 export interface ChatConversation {

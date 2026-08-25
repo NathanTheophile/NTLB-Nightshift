@@ -16,6 +16,9 @@ export interface WorkerStartSpec {
   modelId: string;
   permissionProfile: WorkerPermissionProfile;
   isolationMode: IsolationMode;
+  prompt: string;
+  externalSessionId: string | null;
+  onProtocolEvent?: (event: AgentProtocolEvent) => void;
 }
 
 export interface AgentExecutionHandle {

@@ -16,6 +16,19 @@ const probeEnabled = process.env.NIGHTSHIFT_RUN_FCC_PROBE === '1';
 const probeTimeoutMs = 180_000;
 
 describe.skipIf(!probeEnabled)('ClaudeCodeAdapter real FCC integration', () => {
+  it('uses structured Worker events and resumes the same Claude session', async () => {
+    const workingDirectory = await mkdtemp(join(tmpdir(), 'nightshift-worker-probe-'));
+    const supervisor = new WindowsProcessSupervisor(); const gateway = new LocalFccGateway(new FccRuntimeManager({ supervisor })); const adapter = new ClaudeCodeAdapter(supervisor, gateway);
+    try {
+      const first = await adapter.startWorker({ workerId: 'real-worker-probe', workspaceId: 'scratch-worker-probe', workingDirectory, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', permissionProfile: 'read_only', isolationMode: 'direct_workspace', prompt: 'Reply with exactly NIGHTSHIFT_WORKER_PROBE_OK. Do not modify files.', externalSessionId: null });
+      const firstResult = await completionWithin(adapter, first.handleId, first.completion);
+      expect(firstResult).toMatchObject({ succeeded: true, exitCode: 0 }); expect(firstResult.externalSessionId).toBeTruthy(); expect(firstResult.events.some(({ type }) => type === 'assistant')).toBe(true);
+      const resumed = await adapter.startWorker({ workerId: 'real-worker-probe', workspaceId: 'scratch-worker-probe', workingDirectory, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', permissionProfile: 'read_only', isolationMode: 'direct_workspace', prompt: 'Reply with exactly NIGHTSHIFT_WORKER_RESUME_OK. Do not modify files.', externalSessionId: firstResult.externalSessionId });
+      const resumedResult = await completionWithin(adapter, resumed.handleId, resumed.completion);
+      expect(resumedResult).toMatchObject({ succeeded: true, exitCode: 0, externalSessionId: firstResult.externalSessionId });
+    } finally { await gateway.stopOwnedProcess(); await rm(workingDirectory, { recursive: true, force: true }); }
+  }, probeTimeoutMs * 2 + 30_000);
+
   it('creates the bounded runtime marker in an isolated Git workspace', async () => {
     const workingDirectory = await mkdtemp(join(tmpdir(), 'nightshift-runtime-probe-'));
     const supervisor = new WindowsProcessSupervisor();

@@ -1,4 +1,4 @@
-import type { AgentDescriptor, ModelDescriptor, PlannerTask, Run, RunEvent, Workspace } from '../domain/entities';
+import type { AgentDescriptor, ModelDescriptor, PlannerTask, Run, RunEvent, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
 
 export type WorkspaceEntryKind = 'directory' | 'file' | 'symlink';
 
@@ -34,6 +34,9 @@ export interface PlannerSelectionCatalog {
   defaultAgentId: string;
   defaultModelId: string;
 }
+
+export interface CreateWorkerInput { workspaceId: string; title: string; agentId: string; modelId: string; permissionProfile: WorkerPermissionProfile; isolationMode: IsolationMode; }
+export interface WorkerSelectionCatalog { agents: readonly AgentDescriptor[]; modelsByAgent: Readonly<Record<string, readonly ModelDescriptor[]>>; }
 
 export interface LauncherConfiguration {
   ideDisplayName: string | null;
@@ -76,6 +79,12 @@ export const IPC_CHANNELS = {
   runsList: 'runs:list',
   runsEvents: 'runs:events',
   runsCancel: 'runs:cancel',
+  workersList: 'workers:list',
+  workersCreate: 'workers:create',
+  workersEvents: 'workers:events',
+  workersSend: 'workers:send',
+  workersStop: 'workers:stop',
+  workersSelectionCatalog: 'workers:selection-catalog',
   launcherOpenWorkspaceTool: 'launcher:open-workspace-tool',
   launcherConfigureIde: 'launcher:configure-ide',
   windowMinimize: 'window:minimize',
@@ -98,6 +107,12 @@ export interface IpcContract {
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
   [IPC_CHANNELS.runsEvents]: { request: { runId: string }; response: RunEvent[] };
   [IPC_CHANNELS.runsCancel]: { request: { runId: string }; response: Run };
+  [IPC_CHANNELS.workersList]: { request: { workspaceId: string }; response: WorkerConversation[] };
+  [IPC_CHANNELS.workersCreate]: { request: CreateWorkerInput; response: WorkerConversation };
+  [IPC_CHANNELS.workersEvents]: { request: { workerId: string }; response: WorkerEvent[] };
+  [IPC_CHANNELS.workersSend]: { request: { workerId: string; message: string }; response: WorkerConversation };
+  [IPC_CHANNELS.workersStop]: { request: { workerId: string }; response: WorkerConversation };
+  [IPC_CHANNELS.workersSelectionCatalog]: { request: undefined; response: WorkerSelectionCatalog };
   [IPC_CHANNELS.launcherOpenWorkspaceTool]: { request: LaunchWorkspaceToolRequest; response: LaunchResult };
   [IPC_CHANNELS.launcherConfigureIde]: { request: undefined; response: LauncherConfiguration };
   [IPC_CHANNELS.windowMinimize]: { request: undefined; response: undefined };
@@ -130,6 +145,14 @@ export interface NightShiftApi {
     list: (workspaceId: string) => Promise<Run[]>;
     events: (runId: string) => Promise<RunEvent[]>;
     cancel: (runId: string) => Promise<Run>;
+  };
+  workers: {
+    list: (workspaceId: string) => Promise<WorkerConversation[]>;
+    create: (input: CreateWorkerInput) => Promise<WorkerConversation>;
+    events: (workerId: string) => Promise<WorkerEvent[]>;
+    send: (workerId: string, message: string) => Promise<WorkerConversation>;
+    stop: (workerId: string) => Promise<WorkerConversation>;
+    selectionCatalog: () => Promise<WorkerSelectionCatalog>;
   };
   launcher: {
     openWorkspaceTool: (request: LaunchWorkspaceToolRequest) => Promise<LaunchResult>;

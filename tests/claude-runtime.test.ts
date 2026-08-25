@@ -13,7 +13,7 @@ import type {
   SupervisedProcessSpec,
 } from '../src/main/services/contracts/ProcessSupervisor';
 import { ClaudeCodeAdapter } from '../src/main/services/agents/ClaudeCodeAdapter';
-import { buildClaudeRunArguments } from '../src/main/services/agents/claude/claudeCommand';
+import { buildClaudeRunArguments, buildClaudeWorkerArguments } from '../src/main/services/agents/claude/claudeCommand';
 import { ClaudeStreamJsonParser } from '../src/main/services/agents/claude/ClaudeStreamJsonParser';
 
 describe('ClaudeCodeAdapter runtime protocol', () => {
@@ -57,6 +57,13 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
     expect(parser.sessionId).toBe('session-123');
     expect(parser.terminalEvent?.rawLine).toContain('"type":"result"');
     expect(parser.finish()).toEqual([]);
+  });
+
+  it('maps Worker permissions to bounded Claude tools and resumes a validated session', () => {
+    const readOnly = buildClaudeWorkerArguments({ workerId: 'worker-1', workspaceId: 'workspace-1', workingDirectory: 'C:\\repo', modelId: 'model', permissionProfile: 'read_only', isolationMode: 'direct_workspace', prompt: 'Inspect this project.', externalSessionId: null });
+    const resumedWrite = buildClaudeWorkerArguments({ workerId: 'worker-1', workspaceId: 'workspace-1', workingDirectory: 'C:\\repo', modelId: 'model', permissionProfile: 'workspace_write', isolationMode: 'direct_workspace', prompt: 'Apply the fix.', externalSessionId: 'claude-session-1' });
+    expect(readOnly).toContain('plan'); expect(readOnly).toContain('Read,Glob,Grep'); expect(readOnly.join(' ')).not.toContain('Edit');
+    expect(resumedWrite).toContain('acceptEdits'); expect(resumedWrite).toContain('Read,Edit,Write,Glob,Grep'); expect(resumedWrite).toEqual(expect.arrayContaining(['--resume', 'claude-session-1'])); expect(resumedWrite.join(' ')).not.toContain('Bash');
   });
 
   it('starts a supervised headless run and preserves the external session', async () => {

@@ -39,6 +39,14 @@ const api: NightShiftApi = {
     events: (runId) => invoke(IPC_CHANNELS.runsEvents, { runId }),
     cancel: (runId) => invoke(IPC_CHANNELS.runsCancel, { runId }),
   },
+  workers: {
+    list: (workspaceId) => invoke(IPC_CHANNELS.workersList, { workspaceId }),
+    create: (input) => invoke(IPC_CHANNELS.workersCreate, input),
+    events: (workerId) => invoke(IPC_CHANNELS.workersEvents, { workerId }),
+    send: (workerId, message) => invoke(IPC_CHANNELS.workersSend, { workerId, message }),
+    stop: (workerId) => invoke(IPC_CHANNELS.workersStop, { workerId }),
+    selectionCatalog: () => invoke(IPC_CHANNELS.workersSelectionCatalog, undefined),
+  },
   launcher: {
     openWorkspaceTool: (request) => invoke(IPC_CHANNELS.launcherOpenWorkspaceTool, request),
     configureIde: () => invoke(IPC_CHANNELS.launcherConfigureIde, undefined),
