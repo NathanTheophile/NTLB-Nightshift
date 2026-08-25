@@ -20,6 +20,7 @@ import type { RunService } from '../services/contracts/RunService';
 import type { WorkspaceService } from '../services/WorkspaceService';
 import type { WorkerSessionService } from '../services/contracts/WorkerSessionService';
 import type { RunReviewService } from '../services/RunReviewService';
+import type { ReviewIntegrationService } from '../services/ReviewIntegrationService';
 
 interface IpcServices {
   appVersion: string;
@@ -28,6 +29,7 @@ interface IpcServices {
   plannerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
   runs: RunService;
   reviews: RunReviewService;
+  reviewIntegration: ReviewIntegrationService;
   launcher: LauncherService;
   workers: WorkerSessionService & { createConversation(input: CreateWorkerInput): Promise<IpcContract[typeof IPC_CHANNELS.workersCreate]['response']> };
   workerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.workersSelectionCatalog]['response']>;
@@ -130,6 +132,9 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertNonEmptyString(request.prompt, 'prompt');
     return services.runs.createFollowUp(request.runId, request.prompt);
   });
+  handle(IPC_CHANNELS.runsReviewIntegration, (request) => { assertRecord(request); assertNonEmptyString(request.runId, 'runId'); return services.reviewIntegration.latest(request.runId) ?? null; });
+  handle(IPC_CHANNELS.runsRequestReview, async (request) => { assertRecord(request); assertNonEmptyString(request.runId, 'runId'); return services.reviewIntegration.requestReview(request.runId); });
+  handle(IPC_CHANNELS.runsIntegrateReview, async (request) => { assertRecord(request); assertNonEmptyString(request.reviewId, 'reviewId'); return services.reviewIntegration.integrate(request.reviewId); });
   handle(IPC_CHANNELS.workersList, (request) => { assertRecord(request); assertNonEmptyString(request.workspaceId, 'workspaceId'); return services.workers.list(request.workspaceId); });
   handle(IPC_CHANNELS.workersCreate, (request) => { assertCreateWorkerInput(request); return services.workers.createConversation(request); });
   handle(IPC_CHANNELS.workersEvents, (request) => { assertRecord(request); assertNonEmptyString(request.workerId, 'workerId'); return services.workers.events(request.workerId); });

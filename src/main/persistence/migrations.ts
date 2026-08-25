@@ -235,4 +235,31 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX run_validation_commands_run_idx ON run_validation_commands(run_id, sequence);
     `,
   },
+  {
+    version: 9,
+    name: 'immutable_run_integration_reviews',
+    sql: `
+      CREATE TABLE run_integration_reviews (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+        candidate_sha TEXT NOT NULL,
+        target_dev_sha TEXT NOT NULL,
+        reviewer_agent_id TEXT NOT NULL,
+        reviewer_model_id TEXT NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('PASS', 'FAIL', 'NEEDS_ATTENTION')),
+        summary TEXT NOT NULL,
+        findings TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT NOT NULL,
+        stale_at TEXT,
+        stale_reason TEXT,
+        integration_status TEXT NOT NULL DEFAULT 'not_started' CHECK (integration_status IN ('not_started', 'integrating', 'integrated', 'needs_attention', 'rejected')),
+        integration_commit_sha TEXT,
+        integration_validation TEXT,
+        integration_failure_reason TEXT,
+        integrated_at TEXT
+      );
+      CREATE INDEX run_integration_reviews_run_idx ON run_integration_reviews(run_id, created_at DESC);
+    `,
+  },
 ];

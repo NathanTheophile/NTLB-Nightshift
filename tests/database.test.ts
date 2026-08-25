@@ -30,11 +30,11 @@ describe('DatabaseService', () => {
     const databasePath = join(directory, 'nightshift.sqlite');
 
     const firstOpen = new DatabaseService(databasePath);
-    expect(firstOpen.schemaVersion()).toBe(8);
+    expect(firstOpen.schemaVersion()).toBe(9);
     firstOpen.close();
 
     const secondOpen = new DatabaseService(databasePath);
-    expect(secondOpen.schemaVersion()).toBe(8);
+    expect(secondOpen.schemaVersion()).toBe(9);
     expect(
       secondOpen
         .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
