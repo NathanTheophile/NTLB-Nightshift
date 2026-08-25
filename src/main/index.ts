@@ -27,6 +27,9 @@ import { WorkerSessionService } from './services/WorkerSessionService';
 import { RunReviewService } from './services/RunReviewService';
 import { AdapterReviewerRunner, ReviewIntegrationService } from './services/ReviewIntegrationService';
 import { RunIntegrationReviewRepository } from './persistence/repositories/RunIntegrationReviewRepository';
+import { ProjectValidationService } from './services/ProjectValidationService';
+import { DelegatedLeaderClient } from './services/DelegatedLeaderClient';
+import { DelegatedRunOrchestrator } from './services/DelegatedRunOrchestrator';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
 let database: DatabaseService | undefined;
@@ -124,6 +127,8 @@ void app.whenReady().then(() => {
     console.error(`[FCC] Runtime startup failed: ${detail}`);
   });
 
+  const runReviews = new RunReviewService(runs, workspaces);
+  const delegated = new DelegatedRunOrchestrator(runs, new ProjectValidationService(runs, processSupervisor), runReviews, new DelegatedLeaderClient(fccGateway));
   const runService = new RunService(
     runs,
     tasks,
@@ -133,6 +138,7 @@ void app.whenReady().then(() => {
     { agentId: 'claude-code', modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs: 30 * 60_000 },
     processSupervisor,
     settings,
+    delegated,
   );
   const workerService = new WorkerSessionService(
     workers,
@@ -140,7 +146,7 @@ void app.whenReady().then(() => {
     new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
-  const reviewService = new RunReviewService(runs, workspaces);
+  const reviewService = runReviews;
   const reviewIntegration = new ReviewIntegrationService(runs, workspaces, new RunIntegrationReviewRepository(database), new AdapterReviewerRunner(new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]])), reviewService, join(app.getPath('userData'), 'worktrees'), settings);
 
   registerIpcHandlers({

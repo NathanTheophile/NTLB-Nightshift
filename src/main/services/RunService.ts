@@ -13,6 +13,7 @@ import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/ent
 import type { RunNavigationItem } from '@shared/contracts/ipc';
 import { resolve } from 'node:path';
 import { resolveEffectiveDevBase } from './ReviewIntegrationService';
+import type { DelegatedRunOrchestrator } from './DelegatedRunOrchestrator';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 
@@ -26,7 +27,7 @@ export class RunService implements RunServiceContract {
   private configuredConcurrency: number | undefined;
   private scheduling = false;
   private scheduleRequested = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly delegated?: DelegatedRunOrchestrator) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -138,7 +139,6 @@ export class RunService implements RunServiceContract {
     const batchSteps = run.executionMode === 'sequential_batch' ? this.runs.createBatchSteps(run.id, this.tasks.batchSteps(task.id)) : [];
     this.runs.appendEvent(run.id, 'preparing', { agentId, modelId, executionMode: run.executionMode });
     try {
-      if (run.executionMode === 'delegated_leader') throw new Error('Delegated Leader execution is not supported.');
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
       const adapter = this.adapters.get(agentId); if (!adapter?.capabilities().plannerValidated) throw new Error(`Planner agent ${agentId} is not validated.`);
       if (adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
@@ -150,6 +150,13 @@ export class RunService implements RunServiceContract {
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
       const deadline = Date.now() + this.defaults.timeoutMs;
+      if (run.executionMode === 'delegated_leader') {
+        if (!this.delegated) throw new Error('Delegated Leader runtime is not configured.');
+        const status = await this.delegated.execute({ run, task, worktreePath: worktree.path, adapter, deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', setActive: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), clearActive: () => this.active.delete(run.id) });
+        const finalGit = await inspectGit(worktree.path);
+        this.runs.setAutonomyPhase(run.id, 'terminal'); this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), failure_reason: status === 'blocked' ? 'Delegated Leader blocked autonomous continuation.' : status === 'timed_out' ? 'Run exceeded the hard timeout.' : status === 'cancelled' ? 'Cancelled by user.' : null, validation_status: this.runs.findRequired(run.id).validationStatus ?? 'not_configured', final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
+        this.tasks.setStatus(task.id, taskStatus(status)); this.runs.appendEvent(run.id, 'terminal', { status }); return;
+      }
       const result = run.executionMode === 'sequential_batch'
         ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, deadline)
         : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), deadline);

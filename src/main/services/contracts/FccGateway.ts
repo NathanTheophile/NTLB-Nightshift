@@ -17,5 +17,8 @@ export interface FccGateway {
   ensureAvailable(): Promise<FccHealth>;
   health(): Promise<FccHealth>;
   listModels(): Promise<readonly ModelDescriptor[]>;
+  createMessage?(request: FccMessageRequest, signal: AbortSignal): Promise<unknown>;
   stopOwnedProcess(): Promise<void>;
 }
+
+export interface FccMessageRequest { model: string; system: string; messages: readonly { role: 'user'; content: string }[]; max_tokens: number; }

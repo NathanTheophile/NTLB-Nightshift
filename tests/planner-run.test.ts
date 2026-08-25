@@ -65,14 +65,14 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
-  it('rejects a stale Delegated Leader task at the Run boundary', async () => {
+  it('blocks a Delegated Leader task when its runtime is not configured', async () => {
     const fixture = await setup();
     try {
       const adapter = new CompletingAdapter(); const service = fixture.service(adapter, 1_000);
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Stale mode.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] }); service.schedule();
       const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
       const blocked = await waitFor(() => service.find(run.id).then((item) => item?.status === 'blocked' ? item : undefined));
-      expect(adapter.starts).toBe(0); expect(blocked.failureReason).toContain('not supported');
+      expect(adapter.starts).toBe(0); expect(blocked.failureReason).toContain('not configured');
     } finally { await fixture.dispose(); }
   });
 

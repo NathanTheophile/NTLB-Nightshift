@@ -262,4 +262,32 @@ export const migrations: readonly Migration[] = [
       CREATE INDEX run_integration_reviews_run_idx ON run_integration_reviews(run_id, created_at DESC);
     `,
   },
+  {
+    version: 10,
+    name: 'delegated_leader_attempts',
+    sql: `
+      ALTER TABLE runs ADD COLUMN leader_model_id TEXT;
+      ALTER TABLE runs ADD COLUMN max_attempts INTEGER;
+      ALTER TABLE runs ADD COLUMN autonomy_phase TEXT CHECK (autonomy_phase IN ('planning', 'worker', 'validation', 'evaluating', 'terminal'));
+      CREATE TABLE run_attempts (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+        attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
+        worker_agent_id TEXT NOT NULL,
+        worker_model_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')),
+        external_session_id TEXT,
+        result_summary TEXT,
+        failure_reason TEXT,
+        validation_status TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(run_id, attempt_index)
+      );
+      CREATE INDEX run_attempts_run_idx ON run_attempts(run_id, attempt_index);
+      ALTER TABLE run_validation_commands ADD COLUMN attempt_id TEXT REFERENCES run_attempts(id) ON DELETE RESTRICT;
+    `,
+  },
 ];

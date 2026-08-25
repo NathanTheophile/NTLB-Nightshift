@@ -30,16 +30,16 @@ describe('DatabaseService', () => {
     const databasePath = join(directory, 'nightshift.sqlite');
 
     const firstOpen = new DatabaseService(databasePath);
-    expect(firstOpen.schemaVersion()).toBe(9);
+    expect(firstOpen.schemaVersion()).toBe(10);
     firstOpen.close();
 
     const secondOpen = new DatabaseService(databasePath);
-    expect(secondOpen.schemaVersion()).toBe(9);
+    expect(secondOpen.schemaVersion()).toBe(10);
     expect(
       secondOpen
         .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
         .map(({ name }) => name),
-    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models', 'planner_batch_steps', 'run_batch_steps']));
+    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models', 'planner_batch_steps', 'run_batch_steps', 'run_attempts']));
     secondOpen.close();
   });
 
@@ -66,7 +66,7 @@ describe('DatabaseService', () => {
 
   it('rejects unsupported and invalid Planner execution modes', () => {
     const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\nightshift-test', 'nightshift-test', true); const planner = new PlannerService(tasks, workspaces);
-    expect(() => planner.createTask({ workspaceId: workspace.id, prompt: 'Delegate.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] })).toThrow('not available yet');
+    expect(planner.createTask({ workspaceId: workspace.id, prompt: 'Delegate.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] }).executionMode).toBe('delegated_leader');
     expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: [' '] })).toThrow('non-empty ordered steps');
     expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: Array.from({ length: 33 }, () => 'Step') })).toThrow('between 1 and 32');
     database.close();

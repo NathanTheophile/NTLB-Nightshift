@@ -1,6 +1,6 @@
 import type { ModelDescriptor } from '@shared/domain/entities';
 
-import type { FccGateway, FccHealth } from '../contracts/FccGateway';
+import type { FccGateway, FccHealth, FccMessageRequest } from '../contracts/FccGateway';
 import type { FccRuntimeManager } from './FccRuntimeManager';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 3_000;
@@ -14,11 +14,13 @@ interface FccModelPayload {
 export interface LocalFccGatewayOptions {
   fetchModels?: (endpoint: string) => Promise<unknown>;
   now?: () => Date;
+  postMessage?: (endpoint: string, request: FccMessageRequest, signal: AbortSignal) => Promise<unknown>;
 }
 
 export class LocalFccGateway implements FccGateway {
   private readonly fetchModels: (endpoint: string) => Promise<unknown>;
   private readonly now: () => Date;
+  private readonly postMessage: (endpoint: string, request: FccMessageRequest, signal: AbortSignal) => Promise<unknown>;
 
   public constructor(
     private readonly runtime: FccRuntimeManager,
@@ -26,6 +28,7 @@ export class LocalFccGateway implements FccGateway {
   ) {
     this.fetchModels = options.fetchModels ?? fetchModelCatalog;
     this.now = options.now ?? (() => new Date());
+    this.postMessage = options.postMessage ?? postFccMessage;
   }
 
   public detect(): Promise<FccHealth> {
@@ -60,6 +63,11 @@ export class LocalFccGateway implements FccGateway {
 
   public stopOwnedProcess(): Promise<void> {
     return this.runtime.stopOwnedProcess();
+  }
+  public async createMessage(request: FccMessageRequest, signal: AbortSignal): Promise<unknown> {
+    const health = await this.runtime.ensureAvailable();
+    if (!health.available || !health.endpoint) throw new Error(health.failureReason ?? 'FCC is unavailable.');
+    return this.postMessage(health.endpoint, request, signal);
   }
 }
 
@@ -96,6 +104,12 @@ const fetchModelCatalog = async (endpoint: string): Promise<unknown> => {
       : '';
     throw new Error(`FCC model catalog returned HTTP ${response.status}.${authHint}`);
   }
+  return response.json();
+};
+
+const postFccMessage = async (endpoint: string, request: FccMessageRequest, signal: AbortSignal): Promise<unknown> => {
+  const response = await fetch(new URL('/v1/messages', endpoint), { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request), signal });
+  if (!response.ok) throw new Error(`FCC messages returned HTTP ${response.status}.`);
   return response.json();
 };
 
