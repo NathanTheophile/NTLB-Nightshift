@@ -130,6 +130,7 @@ void app.whenReady().then(() => {
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
     { agentId: 'claude-code', modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs: 30 * 60_000 },
     processSupervisor,
+    settings,
   );
   const workerService = new WorkerSessionService(
     workers,

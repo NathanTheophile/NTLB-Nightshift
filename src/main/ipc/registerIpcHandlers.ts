@@ -82,6 +82,12 @@ export const registerIpcHandlers = (services: IpcServices): void => {
   });
 
   handle(IPC_CHANNELS.plannerSelectionCatalog, () => services.plannerSelectionCatalog());
+  handle(IPC_CHANNELS.plannerGetConcurrency, () => ({ limit: services.runs.concurrencyLimit() as 1 | 2 | 3 | 4 }));
+  handle(IPC_CHANNELS.plannerSetConcurrency, (request) => {
+    assertRecord(request);
+    if (request.limit !== 1 && request.limit !== 2 && request.limit !== 3 && request.limit !== 4) throw new Error('limit must be between 1 and 4.');
+    return { limit: services.runs.setConcurrencyLimit(request.limit) as 1 | 2 | 3 | 4 };
+  });
 
   handle(IPC_CHANNELS.runsList, (request) => {
     assertRecord(request);

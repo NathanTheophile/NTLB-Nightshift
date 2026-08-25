@@ -31,6 +31,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
   const [requestedModelId, setRequestedModelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [concurrency, setConcurrency] = useState<1 | 2 | 3 | 4>(2);
 
   useEffect(() => {
     let active = true;
@@ -42,6 +43,9 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
     refresh();
     void window.nightShift.planner.selectionCatalog().then((value) => {
       if (active) setCatalog(value);
+    }).catch((error: unknown) => onError(messageFrom(error)));
+    void window.nightShift.planner.getConcurrency().then((value) => {
+      if (active) setConcurrency(value.limit);
     }).catch((error: unknown) => onError(messageFrom(error)));
     const interval = window.setInterval(refresh, 1_500);
     return () => {
@@ -84,6 +88,10 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
     } catch (error) {
       onError(messageFrom(error));
     }
+  };
+  const updateConcurrency = async (value: 1 | 2 | 3 | 4): Promise<void> => {
+    try { setConcurrency((await window.nightShift.planner.setConcurrency(value)).limit); }
+    catch (error) { onError(messageFrom(error)); }
   };
 
   return (
@@ -162,6 +170,12 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
               <option value="delegated_leader" disabled>Delegated Leader · bientôt disponible</option>
             </select>
           </label>
+          <label>
+            <span>Runs concurrents</span>
+            <select aria-label="Runs concurrents" value={concurrency} onChange={(event) => void updateConcurrency(Number(event.target.value) as 1 | 2 | 3 | 4)}>
+              {[1, 2, 3, 4].map((value) => <option value={value} key={value}>{value}</option>)}
+            </select>
+          </label>
         </div>
         {executionMode === 'sequential_batch' && <div className="batch-editor" aria-label="Étapes du batch séquentiel">
           {batchSteps.map((step, index) => <div className="batch-step" key={index}>
@@ -184,7 +198,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             {saving ? 'Enregistrement…' : 'Ajouter à la file'}
           </button>
         </div>
-        <p className="runtime-note">Une seule tâche Planner s’exécute à la fois, dans un worktree isolé.</p>
+        <p className="runtime-note">Jusqu’à {concurrency} Run{concurrency > 1 ? 's' : ''} Planner isolé{concurrency > 1 ? 's' : ''} s’exécutent simultanément.</p>
       </form>
     </section>
   );

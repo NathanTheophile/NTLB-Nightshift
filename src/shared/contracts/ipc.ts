@@ -36,6 +36,7 @@ export interface PlannerSelectionCatalog {
   defaultAgentId: string;
   defaultModelId: string;
 }
+export interface PlannerConcurrencySettings { limit: 1 | 2 | 3 | 4; }
 
 export interface CreateWorkerInput { workspaceId: string; title: string; agentId: string; modelId: string; permissionProfile: WorkerPermissionProfile; isolationMode: IsolationMode; }
 export interface WorkerSelectionCatalog { agents: readonly AgentDescriptor[]; modelsByAgent: Readonly<Record<string, readonly ModelDescriptor[]>>; }
@@ -79,6 +80,8 @@ export const IPC_CHANNELS = {
   plannerCreateTask: 'planner:create-task',
   plannerArchiveTask: 'planner:archive-task',
   plannerSelectionCatalog: 'planner:selection-catalog',
+  plannerGetConcurrency: 'planner:get-concurrency',
+  plannerSetConcurrency: 'planner:set-concurrency',
   runsList: 'runs:list',
   runsEvents: 'runs:events',
   runsBatchSteps: 'runs:batch-steps',
@@ -114,6 +117,8 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerCreateTask]: { request: CreatePlannerTaskInput; response: PlannerTask };
   [IPC_CHANNELS.plannerArchiveTask]: { request: { taskId: string }; response: PlannerTask };
   [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
+  [IPC_CHANNELS.plannerGetConcurrency]: { request: undefined; response: PlannerConcurrencySettings };
+  [IPC_CHANNELS.plannerSetConcurrency]: { request: PlannerConcurrencySettings; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
   [IPC_CHANNELS.runsEvents]: { request: ListRunEventsRequest; response: RunEventPage };
   [IPC_CHANNELS.runsBatchSteps]: { request: { runId: string }; response: BatchStep[] };
@@ -157,6 +162,8 @@ export interface NightShiftApi {
     createTask: (input: CreatePlannerTaskInput) => Promise<PlannerTask>;
     archiveTask: (taskId: string) => Promise<PlannerTask>;
     selectionCatalog: () => Promise<PlannerSelectionCatalog>;
+    getConcurrency: () => Promise<PlannerConcurrencySettings>;
+    setConcurrency: (limit: 1 | 2 | 3 | 4) => Promise<PlannerConcurrencySettings>;
   };
   runs: {
     list: (workspaceId: string) => Promise<Run[]>;

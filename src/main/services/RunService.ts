@@ -8,6 +8,7 @@ import type { WorktreeService } from './contracts/WorktreeService';
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
+import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
 import { resolve } from 'node:path';
 
@@ -19,8 +20,11 @@ export class RunService implements RunServiceContract {
   private readonly publishing = new Map<string, Promise<Run>>();
   private readonly followUpQueue: string[] = [];
   private readonly validation: ProjectValidationService;
+  private readonly slots = new Map<string, Promise<void>>();
+  private configuredConcurrency: number | undefined;
   private scheduling = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor()) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
+  private scheduleRequested = false;
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -40,7 +44,19 @@ export class RunService implements RunServiceContract {
     }
     for (const run of this.runs.publishingCandidates()) { const reason = 'Candidate publishing interrupted by NightShift restart; retry is available.'; this.runs.setCandidatePublishFailure(run.id, reason); this.runs.appendEvent(run.id, 'candidate_publish_recovered', { reason }); }
   }
-  public schedule(): void { if (!this.scheduling) void this.runQueue().catch((error: unknown) => console.error('[Planner] Scheduler stopped unexpectedly.', error)); }
+  public concurrencyLimit(): number { return this.configuredConcurrency ?? normalizeConcurrency(this.settings?.get<number>('planner.concurrent_runs')); }
+  public setConcurrencyLimit(limit: number): number {
+    const normalized = normalizeConcurrency(limit);
+    if (limit !== normalized) throw new Error('Concurrent Planner Runs must be 1, 2, 3, or 4.');
+    this.configuredConcurrency = normalized;
+    this.settings?.set('planner.concurrent_runs', normalized);
+    this.schedule();
+    return normalized;
+  }
+  public schedule(): void {
+    this.scheduleRequested = true;
+    if (!this.scheduling) void this.fillSlots().catch((error: unknown) => console.error('[Planner] Scheduler stopped unexpectedly.', error));
+  }
   public async requestCancellation(runId: string): Promise<Run> {
     const run = this.runs.findRequired(runId); if (terminalStatuses.has(run.status)) return run;
     this.runs.setStatus(runId, 'cancel_requested'); this.runs.appendEvent(runId, 'cancellation_requested', {});
@@ -65,17 +81,52 @@ export class RunService implements RunServiceContract {
     this.followUpQueue.push(run.id); this.schedule();
     return Promise.resolve(run);
   }
-  private async runQueue(): Promise<void> {
+  private async fillSlots(): Promise<void> {
     this.scheduling = true;
-    try { for (;;) { const followUpRunId = this.followUpQueue.shift(); if (followUpRunId) { await this.execute(this.runs.findRequired(followUpRunId).taskId, followUpRunId); continue; } const task = this.tasks.nextQueued(); if (!task) return; await this.execute(task.id); } } finally { this.scheduling = false; if (this.followUpQueue.length || this.tasks.nextQueued()) this.schedule(); }
+    try {
+      do {
+        this.scheduleRequested = false;
+        while (this.slots.size < this.concurrencyLimit()) {
+          const followUpRunId = this.followUpQueue.shift();
+          if (followUpRunId) {
+            const run = this.runs.find(followUpRunId);
+            if (!run || terminalStatuses.has(run.status) || this.slots.has(run.id)) continue;
+            this.launch(run.taskId, run.id);
+            continue;
+          }
+          const task = this.tasks.claimNextQueued();
+          if (!task) break;
+          this.launch(task.id);
+        }
+      } while (this.scheduleRequested && this.slots.size < this.concurrencyLimit());
+    } finally {
+      this.scheduling = false;
+      if (this.scheduleRequested && this.slots.size < this.concurrencyLimit()) this.schedule();
+    }
+  }
+  private launch(taskId: string, existingRunId?: string): void {
+    const task = this.tasks.findById(taskId);
+    if (!task) return;
+    const runId = existingRunId ?? this.runs.create({
+      taskId: task.id,
+      workspaceId: task.workspaceId,
+      resolvedAgentId: task.requestedAgentId ?? this.defaults.agentId,
+      resolvedModelId: task.requestedModelId ?? this.defaults.modelId,
+      executionMode: task.executionMode,
+    }).id;
+    const reservation = this.execute(taskId, runId).catch((error: unknown) => console.error('[Planner] Run failed unexpectedly.', error)).finally(() => {
+      this.slots.delete(runId);
+      this.schedule();
+    });
+    this.slots.set(runId, reservation);
   }
   private async execute(taskId: string, existingRunId?: string): Promise<void> {
-    const task = this.tasks.findById(taskId); if (!task || (!existingRunId && task.status !== 'queued')) return;
+    const task = this.tasks.findById(taskId); if (!task || (!existingRunId && task.status !== 'running')) return;
     const workspace = this.workspaces.findById(task.workspaceId); const requestedAgentId = task.requestedAgentId ?? this.defaults.agentId; const requestedModelId = task.requestedModelId ?? this.defaults.modelId;
     const run = existingRunId ? this.runs.findRequired(existingRunId) : this.runs.create({ taskId: task.id, workspaceId: task.workspaceId, resolvedAgentId: requestedAgentId, resolvedModelId: requestedModelId, executionMode: task.executionMode });
     const agentId = run.resolvedAgentId; const modelId = run.resolvedModelId; const isFollowUp = Boolean(run.sourceRunId);
     const batchSteps = run.executionMode === 'sequential_batch' ? this.runs.createBatchSteps(run.id, this.tasks.batchSteps(task.id)) : [];
-    if (!isFollowUp) this.tasks.setStatus(task.id, 'running'); this.runs.appendEvent(run.id, 'preparing', { agentId, modelId, executionMode: run.executionMode });
+    this.runs.appendEvent(run.id, 'preparing', { agentId, modelId, executionMode: run.executionMode });
     try {
       if (run.executionMode === 'delegated_leader') throw new Error('Delegated Leader execution is not supported.');
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
@@ -277,3 +328,4 @@ const candidateBranchName = (runId: string, title: string): string => {
   return `nightshift/run/${runId}-${slug}`;
 };
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
+const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;
