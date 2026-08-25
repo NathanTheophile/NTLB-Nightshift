@@ -65,14 +65,14 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
-  it('rejects a stale Delegated Leader task at the Run boundary', async () => {
+  it('blocks a Delegated Leader task when its runtime is not configured', async () => {
     const fixture = await setup();
     try {
-      const adapter = new CompletingAdapter(); const service = fixture.service(adapter, 1_000);
+      const adapter = new CompletingAdapter(); adapter.capabilities = () => ({ ...capabilities, workerValidated: true }); const service = fixture.service(adapter, 1_000);
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Stale mode.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] }); service.schedule();
       const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
       const blocked = await waitFor(() => service.find(run.id).then((item) => item?.status === 'blocked' ? item : undefined));
-      expect(adapter.starts).toBe(0); expect(blocked.failureReason).toContain('not supported');
+      expect(adapter.starts).toBe(0); expect(blocked.failureReason).toContain('not configured');
     } finally { await fixture.dispose(); }
   });
 
@@ -382,7 +382,7 @@ const setup = async () => {
 };
 
 class CompletingAdapter implements AgentAdapter {
-  public readonly id = 'claude-code'; public starts = 0; public readonly workingDirectories: string[] = []; public capabilities = (): AgentCapabilities => capabilities; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
+  public readonly id = 'claude-code'; public starts = 0; public readonly workingDirectories: string[] = []; public capabilities = (): AgentCapabilities => capabilities; public supportsWorkerModel = (): boolean => true; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
   public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; this.workingDirectories.push(spec.workingDirectory); const event = { sequence: 0, timestamp: new Date().toISOString(), raw: '{"type":"system"}', parsed: { type: 'system' }, type: 'system', externalSessionId: 'session-test', terminal: false, parseError: null }; spec.onProtocolEvent?.(event); await writeFile(join(spec.workingDirectory, 'marker.txt'), 'changed by planner\n'); return { handleId: randomUUID(), externalSessionId: 'session-test', events: [event], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'session-test', events: [event], terminalEvent: { ...event, terminal: true }, stderr: '' }) }; }
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('not implemented')); } public cancel(): Promise<void> { return Promise.resolve(); }
 }

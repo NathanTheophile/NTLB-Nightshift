@@ -61,6 +61,8 @@ export type RunStatus =
 
 export type ValidationStatus = 'not_configured' | 'running' | 'passed' | 'failed' | 'interrupted';
 export type ValidationCommandStatus = 'running' | 'passed' | 'failed' | 'interrupted';
+export type RunAttemptStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out';
+export type DelegatedAutonomyPhase = 'planning' | 'worker' | 'validation' | 'evaluating' | 'terminal';
 
 export type CandidatePublishState = 'not_published' | 'publishing' | 'published' | 'failed';
 export type ReviewerVerdict = 'PASS' | 'FAIL' | 'NEEDS_ATTENTION';
@@ -114,6 +116,26 @@ export interface Run {
   candidatePublishState: CandidatePublishState;
   candidatePublishedAt: IsoTimestamp | null;
   candidateFailureReason: string | null;
+  leaderModelId: string | null;
+  maxAttempts: number | null;
+  autonomyPhase: DelegatedAutonomyPhase | null;
+  createdAt: IsoTimestamp;
+}
+
+export interface RunAttempt {
+  id: EntityId;
+  runId: EntityId;
+  attemptIndex: number;
+  workerAgentId: string;
+  workerModelId: string;
+  prompt: string;
+  status: RunAttemptStatus;
+  externalSessionId: string | null;
+  resultSummary: string | null;
+  failureReason: string | null;
+  validationStatus: ValidationStatus | null;
+  startedAt: IsoTimestamp | null;
+  finishedAt: IsoTimestamp | null;
   createdAt: IsoTimestamp;
 }
 
@@ -129,6 +151,7 @@ export interface RunValidationCommand {
   exitCode: number | null;
   output: string;
   outputTruncated: boolean;
+  attemptId: EntityId | null;
 }
 
 export interface RunEvent {
