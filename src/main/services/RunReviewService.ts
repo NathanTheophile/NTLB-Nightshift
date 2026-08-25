@@ -1,19 +1,21 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve, sep } from 'node:path';
 
 import type { Run, RunChangedFile, RunFileDiff, RunReview, RunReviewExportKind, RunReviewExportResult } from '@shared/domain/entities';
 
 import type { RunRepository } from '../persistence/repositories/RunRepository';
+import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
 
 const MAX_GIT_OUTPUT = 4 * 1024 * 1024;
 const MAX_DIFF_BYTES = 512 * 1024;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_BUNDLE_BYTES = 32 * 1024 * 1024;
 const MAX_BUNDLE_FILES = 500;
+const MAX_BINARY_PROBE_BYTES = 8 * 1024;
 
 export class RunReviewService {
-  public constructor(private readonly runs: RunRepository) {}
+  public constructor(private readonly runs: RunRepository, private readonly workspaces: WorkspaceRepository) {}
 
   public async inspect(runId: string): Promise<RunReview> {
     const run = this.runs.findRequired(runId);
@@ -99,39 +101,47 @@ export class RunReviewService {
   }
 
   private async writeBundle(review: RunReview, outputPath: string): Promise<void> {
-    const patch = await this.fullPatch(review);
-    const entries: ZipEntry[] = [
-      { name: 'run-review.md', content: Buffer.from(markdown(review)) },
-      { name: 'run.json', content: Buffer.from(`${JSON.stringify(jsonExport(review), null, 2)}\n`) },
-      { name: 'status.txt', content: Buffer.from(review.gitStatus) },
-      { name: 'changes.patch', content: Buffer.from(patch) },
-    ];
+    const entries: ZipEntry[] = []; let totalBytes = 22;
+    const add = (name: string, content: Buffer): boolean => {
+      const zipBytes = content.length + Buffer.byteLength(name) * 2 + 76;
+      if (entries.length >= MAX_BUNDLE_FILES || totalBytes + zipBytes > MAX_BUNDLE_BYTES) return false;
+      entries.push({ name, content }); totalBytes += zipBytes; return true;
+    };
+    add('run-review.md', Buffer.from(markdown(review)));
+    add('run.json', Buffer.from(`${JSON.stringify(jsonExport(review), null, 2)}\n`));
+    add('status.txt', Buffer.from(review.gitStatus));
+    const patch = await this.fullPatch(review, MAX_BUNDLE_BYTES - totalBytes - 128);
+    add('changes.patch', Buffer.from(patch));
     const worktree = await this.validWorktree(review.run, []);
     if (worktree) for (const file of review.changedFiles.filter((item) => item.kind === 'untracked')) {
       if (entries.length >= MAX_BUNDLE_FILES) break;
       const source = await safeRegularFile(worktree, file.path); if (!source || file.sizeBytes === null || file.sizeBytes > MAX_FILE_BYTES) continue;
       const content = await readFile(source);
-      if (entries.reduce((total, entry) => total + entry.content.length, 0) + content.length > MAX_BUNDLE_BYTES) break;
-      entries.push({ name: `untracked/${file.path.replaceAll('\\', '/')}`, content });
+      if (!add(`untracked/${file.path.replaceAll('\\', '/')}`, content)) break;
     }
     await mkdir(dirname(outputPath), { recursive: true }); await writeZip(outputPath, entries);
   }
 
-  private async fullPatch(review: RunReview): Promise<string> {
+  private async fullPatch(review: RunReview, maxBytes = MAX_GIT_OUTPUT): Promise<string> {
     const worktree = await this.validWorktree(review.run, []);
     if (!worktree || !review.run.baseSha) return '';
-    const patch = await git(worktree, ['diff', '--no-ext-diff', '--binary', review.run.baseSha], MAX_GIT_OUTPUT);
+    const patch = await git(worktree, ['diff', '--no-ext-diff', '--binary', review.run.baseSha], Math.min(MAX_GIT_OUTPUT, Math.max(0, maxBytes)));
     return patch.stdout;
   }
 
   private async validWorktree(run: Run, warnings: string[]): Promise<string | undefined> {
     if (!run.worktreePath || !run.baseSha) return undefined;
     try {
+      const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) throw new Error('missing Git workspace');
       const original = await lstat(run.worktreePath); if (original.isSymbolicLink()) throw new Error('symlinked worktree');
       const canonical = await realpath(run.worktreePath); const info = await stat(canonical);
       if (!info.isDirectory()) throw new Error('not a directory');
-      const root = await git(canonical, ['rev-parse', '--show-toplevel']);
-      if (root.exitCode !== 0 || resolve(root.stdout.trim()) !== resolve(canonical)) throw new Error('not a Git worktree root');
+      const [root, worktreeGitDir, workspaceGitDir] = await Promise.all([
+        git(canonical, ['rev-parse', '--show-toplevel']),
+        git(canonical, ['rev-parse', '--git-common-dir']),
+        git(workspace.rootPath, ['rev-parse', '--git-common-dir']),
+      ]);
+      if (root.exitCode !== 0 || worktreeGitDir.exitCode !== 0 || workspaceGitDir.exitCode !== 0 || resolve(root.stdout.trim()) !== resolve(canonical) || resolve(canonical, worktreeGitDir.stdout.trim()) !== resolve(workspace.rootPath, workspaceGitDir.stdout.trim())) throw new Error('not a Workspace worktree root');
       return canonical;
     } catch { warnings.push('The persisted Run worktree is missing or invalid.'); return undefined; }
   }
@@ -139,9 +149,10 @@ export class RunReviewService {
 
 const fileInfo = async (root: string, path: string, values: Pick<RunChangedFile, 'path' | 'previousPath' | 'kind' | 'staged' | 'unstaged'>): Promise<RunChangedFile> => {
   const target = safeChild(root, path); if (!target) return { ...values, isBinary: false, sizeBytes: null, diffAvailable: false, note: 'Unsafe path rejected.' };
-  try { const source = await safeRegularFile(root, path); if (!source) return { ...values, isBinary: false, sizeBytes: null, diffAvailable: false, note: 'Directory or symlink content is not included.' }; const info = await stat(source); const data = await readFile(source, { encoding: null }); return { ...values, isBinary: isBinary(data), sizeBytes: info.size, diffAvailable: info.size <= MAX_DIFF_BYTES, note: info.size > MAX_DIFF_BYTES ? 'File exceeds the 512 KiB diff limit.' : null }; }
+  try { const source = await safeRegularFile(root, path); if (!source) return { ...values, isBinary: false, sizeBytes: null, diffAvailable: false, note: 'Directory or symlink content is not included.' }; const info = await stat(source); const data = await readPrefix(source, Math.min(info.size, MAX_BINARY_PROBE_BYTES)); return { ...values, isBinary: isBinary(data), sizeBytes: info.size, diffAvailable: info.size <= MAX_DIFF_BYTES, note: info.size > MAX_DIFF_BYTES ? 'File exceeds the 512 KiB diff limit.' : null }; }
   catch { return { ...values, isBinary: false, sizeBytes: null, diffAvailable: true, note: values.kind === 'deleted' ? null : 'File is unavailable.' }; }
 };
+const readPrefix = async (path: string, length: number): Promise<Buffer> => { const handle = await open(path, 'r'); try { const data = Buffer.alloc(length); const { bytesRead } = await handle.read(data, 0, length, 0); return data.subarray(0, bytesRead); } finally { await handle.close(); } };
 const isInside = (root: string, target: string): boolean => target === resolve(root) || target.startsWith(`${resolve(root)}${sep}`);
 const safeChild = (root: string, path: string): string | undefined => { if (!path || isAbsolute(path)) return undefined; const target = resolve(root, path); return isInside(root, target) ? target : undefined; };
 const safeRegularFile = async (root: string, path: string): Promise<string | undefined> => { const target = safeChild(root, path); if (!target) return undefined; const direct = await lstat(target); if (!direct.isFile() || direct.isSymbolicLink()) return undefined; const canonical = await realpath(target); return isInside(root, canonical) ? canonical : undefined; };

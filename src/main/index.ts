@@ -136,7 +136,7 @@ void app.whenReady().then(() => {
     new GitWorktreeService(join(app.getPath('userData'), 'worktrees')),
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
-  const reviewService = new RunReviewService(runs);
+  const reviewService = new RunReviewService(runs, workspaces);
 
   registerIpcHandlers({
     appVersion: app.getVersion(),

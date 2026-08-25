@@ -41,6 +41,29 @@ describe('RunReviewService', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('rejects worktrees from another repository for review, export, and opening', async () => {
+    const fixture = await setup();
+    try {
+      const unrelated = join(fixture.root, 'unrelated');
+      await exec('git', ['init', unrelated]); await exec('git', ['-C', unrelated, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', unrelated, 'config', 'user.name', 'NightShift Test']);
+      await writeFile(join(unrelated, 'foreign.txt'), 'foreign\n'); await exec('git', ['-C', unrelated, 'add', '.']); await exec('git', ['-C', unrelated, 'commit', '-m', 'foreign']);
+      fixture.runRepository.setPreparation(fixture.run.id, fixture.base, unrelated);
+      expect((await fixture.service.inspect(fixture.run.id)).warnings.join(' ')).toContain('missing or invalid');
+      await fixture.service.exportTo(fixture.run.id, 'bundle', join(fixture.root, 'foreign.zip'));
+      expect((await readFile(join(fixture.root, 'foreign.zip'))).toString('utf8')).not.toContain('foreign.txt');
+      await expect(fixture.service.resolveValidWorktree(fixture.run.id)).rejects.toThrow('valid persisted worktree');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('probes large files without making them diffable', async () => {
+    const fixture = await setup();
+    try {
+      await writeFile(join(fixture.worktree, 'large.bin'), Buffer.concat([Buffer.from([0]), Buffer.alloc(9 * 1024 * 1024)]));
+      const file = (await fixture.service.inspect(fixture.run.id)).changedFiles.find((item) => item.path === 'large.bin');
+      expect(file).toMatchObject({ isBinary: true, diffAvailable: false, sizeBytes: 9 * 1024 * 1024 + 1 });
+    } finally { await fixture.dispose(); }
+  });
+
   it('exports bounded evidence only: review files, patch and safe untracked content', async () => {
     const fixture = await setup();
     try {
@@ -58,5 +81,5 @@ const setup = async () => {
   await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']);
   await Promise.all(['modified.txt', 'deleted.txt', 'renamed.txt'].map((name) => writeFile(join(repository, name), 'base\n'))); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim();
   const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const workspace = workspaces.addOrTouch(repository, 'repository', true); const task = tasks.create({ workspaceId: workspace.id, prompt: 'Review evidence', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: ['First evidence'] }); const runRepository = new RunRepository(database); const run = runRepository.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: 'agent', resolvedModelId: 'model', executionMode: 'sequential_batch' }); const handle = await new GitWorktreeService(storage).createForRun({ runId: run.id, repositoryRoot: repository, baseSha: base }); runRepository.setPreparation(run.id, base, handle.path); runRepository.createBatchSteps(run.id, ['First evidence']);
-  return { root, repository, worktree: handle.path, base, run: runRepository.findRequired(run.id), runRepository, service: new RunReviewService(runRepository), dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
+  return { root, repository, worktree: handle.path, base, run: runRepository.findRequired(run.id), runRepository, service: new RunReviewService(runRepository, workspaces), dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
 };

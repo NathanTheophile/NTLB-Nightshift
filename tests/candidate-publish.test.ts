@@ -47,6 +47,21 @@ describe('candidate publishing and follow-up runs', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('recovers candidate materialization after a local branch or commit is left behind', async () => {
+    const fixture = await setup();
+    try {
+      const afterBranch = await fixture.completedRun(true); const branch = `nightshift/run/${afterBranch.id}-change-files`;
+      await exec('git', ['-C', (await fixture.service.find(afterBranch.id))?.worktreePath ?? '', 'switch', '-c', branch]);
+      const recoveredBranch = await fixture.service.publishCandidate(afterBranch.id);
+      expect(recoveredBranch.candidatePublishState).toBe('published');
+
+      const afterCommit = await fixture.completedRun(true); const committedBranch = `nightshift/run/${afterCommit.id}-change-files`; const committedWorktree = (await fixture.service.find(afterCommit.id))?.worktreePath ?? '';
+      await exec('git', ['-C', committedWorktree, 'switch', '-c', committedBranch]); await exec('git', ['-C', committedWorktree, 'add', '-A']); await exec('git', ['-C', committedWorktree, 'commit', '-m', `NightShift candidate: ${afterCommit.id}`]);
+      const recoveredCommit = await fixture.service.publishCandidate(afterCommit.id);
+      expect(recoveredCommit.candidatePublishState).toBe('published'); expect(recoveredCommit.candidateBranchName).toBe(committedBranch);
+    } finally { await fixture.dispose(); }
+  });
+
   it('bases a fresh follow-up invocation on the published candidate even after the workspace HEAD moves', async () => {
     const fixture = await setup();
     try {
@@ -57,18 +72,30 @@ describe('candidate publishing and follow-up runs', () => {
       expect(completed.sourceRunId).toBe(source.id); expect(completed.baseSha).toBe(published.candidateCommitSha); expect(completed.worktreePath).not.toBe(source.worktreePath); expect(fixture.adapter.starts).toBe(1);
     } finally { await fixture.dispose(); }
   });
+
+  it('runs a sequential source follow-up once as a fresh single-agent corrective Run', async () => {
+    const fixture = await setup();
+    try {
+      const source = await fixture.completedRun(true, 'sequential_batch'); const published = await fixture.service.publishCandidate(source.id);
+      const followUp = await fixture.service.createFollowUp(source.id, 'Correct the candidate.');
+      const completed = await waitFor(() => fixture.service.find(followUp.id).then((run) => run?.status === 'completed' ? run : undefined));
+      expect(completed).toMatchObject({ executionMode: 'single_agent', sourceRunId: source.id, baseSha: published.candidateCommitSha });
+      expect(fixture.service.batchSteps(completed.id)).toEqual([]); expect(fixture.adapter.starts).toBe(1);
+      expect(fixture.tasks.findById(source.taskId)?.status).toBe('completed');
+    } finally { await fixture.dispose(); }
+  });
 });
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-candidate-')); const repository = join(root, 'repo'); const remote = join(root, 'remote.git'); const database = new DatabaseService(':memory:');
   await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']); await writeFile(join(repository, 'base.txt'), 'base\n'); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); await exec('git', ['init', '--bare', remote]); await exec('git', ['-C', repository, 'remote', 'add', 'origin', remote]);
   const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repo', true); const adapter = new FollowUpAdapter(); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'model', timeoutMs: 2_000 });
-  const completedRun = async (changes: boolean) => {
-    const task = tasks.create({ workspaceId: workspace.id, prompt: 'Change files.', requestedAgentId: adapter.id, requestedModelId: 'model', priority: 1 }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: adapter.id, resolvedModelId: 'model' }); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim(); const worktree = await new GitWorktreeService(join(root, 'worktrees')).createForRun({ runId: run.id, repositoryRoot: repository, baseSha: base }); runs.setPreparation(run.id, base, worktree.path);
+  const completedRun = async (changes: boolean, executionMode: 'single_agent' | 'sequential_batch' = 'single_agent') => {
+    const task = tasks.create({ workspaceId: workspace.id, prompt: 'Change files.', requestedAgentId: adapter.id, requestedModelId: 'model', priority: 1, executionMode, batchSteps: executionMode === 'sequential_batch' ? ['First step', 'Second step'] : [] }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: adapter.id, resolvedModelId: 'model', executionMode }); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim(); const worktree = await new GitWorktreeService(join(root, 'worktrees')).createForRun({ runId: run.id, repositoryRoot: repository, baseSha: base }); runs.setPreparation(run.id, base, worktree.path);
     if (changes) { await writeFile(join(worktree.path, 'base.txt'), 'tracked change\n'); await writeFile(join(worktree.path, 'untracked.txt'), 'untracked\n'); }
-    return runs.setStatus(run.id, 'completed');
+    tasks.setStatus(task.id, 'completed'); return runs.setStatus(run.id, 'completed');
   };
-  return { repository, remote, service, adapter, completedRun, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
+  return { repository, remote, service, adapter, tasks, completedRun, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
 };
 
 class FollowUpAdapter implements AgentAdapter {
