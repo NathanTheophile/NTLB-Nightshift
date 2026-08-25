@@ -39,13 +39,14 @@ export class RunService implements RunServiceContract {
     try {
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
       const adapter = this.adapters.get(agentId); if (!adapter?.capabilities().plannerValidated) throw new Error(`Planner agent ${agentId} is not validated.`);
+      if (adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
       const head = await runGit(workspace.rootPath, ['rev-parse', '--verify', 'HEAD']); if (head.exitCode !== 0) throw new Error('Could not determine Git HEAD for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id)) return;
       const worktree = await this.worktrees.createForRun({ runId: run.id, repositoryRoot: workspace.rootPath, baseSha: head.stdout.trim() });
       this.runs.setPreparation(run.id, worktree.baseSha, worktree.path); this.runs.appendEvent(run.id, 'worktree_created', worktree);
       if (await this.finalizeIfCancellationRequested(run.id, task.id)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
-      const handle = await adapter.startRun({ runId: run.id, workspaceId: workspace.id, workingDirectory: worktree.path, modelId, prompt: task.prompt, onProtocolEvent: (event) => this.runs.appendEvent(run.id, 'claude_protocol', event, event.timestamp) });
+      const handle = await adapter.startRun({ runId: run.id, workspaceId: workspace.id, workingDirectory: worktree.path, modelId, prompt: task.prompt, onProtocolEvent: (event) => this.runs.appendEvent(run.id, 'agent_protocol', event, event.timestamp) });
       this.active.set(run.id, { adapter, handleId: handle.handleId, timedOut: false });
       if (this.runs.findRequired(run.id).status === 'cancel_requested') await adapter.cancel(handle.handleId);
       const result = await this.waitWithTimeout(run.id, handle.completion);

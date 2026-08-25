@@ -55,6 +55,8 @@ export interface AgentAdapter {
   startWorker(spec: WorkerStartSpec): Promise<AgentExecutionHandle>;
   startRun(spec: RunStartSpec): Promise<AgentExecutionHandle>;
   cancel(handleId: string): Promise<void>;
+  /** Explicit compatibility evidence for unattended Planner execution. */
+  supportsPlannerModel?(modelId: string): boolean;
   resume?(sessionId: string): Promise<AgentExecutionHandle>;
 }
 

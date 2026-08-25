@@ -20,6 +20,7 @@ interface IpcServices {
   appVersion: string;
   workspaces: WorkspaceService;
   planner: PlannerService;
+  plannerSelectionCatalog: () => Promise<IpcContract[typeof IPC_CHANNELS.plannerSelectionCatalog]['response']>;
   runs: RunService;
   launcher: LauncherService;
 }
@@ -71,6 +72,8 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     assertNonEmptyString(request.taskId, 'taskId');
     return services.planner.archiveTask(request.taskId);
   });
+
+  handle(IPC_CHANNELS.plannerSelectionCatalog, () => services.plannerSelectionCatalog());
 
   handle(IPC_CHANNELS.runsList, (request) => {
     assertRecord(request);
