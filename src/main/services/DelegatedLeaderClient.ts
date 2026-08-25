@@ -14,10 +14,13 @@ export interface LeaderRequest {
   attempt?: { index: number; workerResultSummary: string | null; workerFailureReason: string | null };
   evidence: { gitStatus: string; changedFiles: string[]; diff: string; diffTruncated: boolean; validationStatus: ValidationStatus; validationCommands: Array<{ command: string; status: string; exitCode: number | null; output: string; outputTruncated: boolean }>; priorAttemptSummaries: string[] };
 }
+export interface LeaderClient { resolveLuna(): Promise<ModelDescriptor>; decide(modelId: string, request: LeaderRequest, signal: AbortSignal): Promise<LeaderDecision>; }
 
-const systemInstruction = "You are NightShift's Delegated Leader. You do not edit code. Return exactly one JSON object matching the requested protocol, with no markdown or chain-of-thought. DONE is allowed only when deterministic validation passed.";
+const systemInstruction = `You are NightShift's Delegated Leader. You never edit code or run commands. Return exactly one JSON object and no markdown, commentary, or chain-of-thought.
+Schema: {"protocolVersion":1,"action":"WORK","instruction":"non-empty concrete worker instruction","summary":"concise operational summary"} OR {"protocolVersion":1,"action":"DONE","summary":"concise operational summary"} OR {"protocolVersion":1,"action":"BLOCKED","summary":"concise operational summary","blocker":"non-empty actionable blocker"}.
+WORK requires a non-empty instruction and is for another fresh Worker attempt. DONE is permitted only when deterministic validationStatus is "passed". BLOCKED is for a reason autonomous continuation is unsafe or impossible. Do not add keys.`;
 
-export class DelegatedLeaderClient {
+export class DelegatedLeaderClient implements LeaderClient {
   public constructor(private readonly gateway: FccGateway) {}
 
   public async resolveLuna(): Promise<ModelDescriptor> {

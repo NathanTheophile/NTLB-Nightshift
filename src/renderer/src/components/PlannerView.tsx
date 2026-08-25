@@ -56,7 +56,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
 
   const submitTask = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (saving || (executionMode === 'single_agent' && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))) {
+    if (saving || ((executionMode === 'single_agent' || executionMode === 'delegated_leader') && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))) {
       return;
     }
 
@@ -167,7 +167,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => setExecutionMode(event.target.value as PlannerExecutionMode)}>
               <option value="single_agent">Single Agent</option>
               <option value="sequential_batch">Sequential Batch</option>
-              <option value="delegated_leader" disabled>Delegated Leader · bientôt disponible</option>
+              <option value="delegated_leader">Delegated Leader</option>
             </select>
           </label>
           <label>
@@ -194,7 +194,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             placeholder={executionMode === 'sequential_batch' ? 'Contexte partagé facultatif pour toutes les étapes…' : 'Ajouter une tâche automatisée…'}
             aria-label="Prompt de la tâche Planner"
           />
-          <button type="submit" disabled={saving || (executionMode === 'single_agent' && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))}>
+          <button type="submit" disabled={saving || ((executionMode === 'single_agent' || executionMode === 'delegated_leader') && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))}>
             {saving ? 'Enregistrement…' : 'Ajouter à la file'}
           </button>
         </div>

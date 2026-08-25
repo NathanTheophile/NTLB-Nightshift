@@ -140,8 +140,8 @@ export class RunService implements RunServiceContract {
     this.runs.appendEvent(run.id, 'preparing', { agentId, modelId, executionMode: run.executionMode });
     try {
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
-      const adapter = this.adapters.get(agentId); if (!adapter?.capabilities().plannerValidated) throw new Error(`Planner agent ${agentId} is not validated.`);
-      if (adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
+      const adapter = this.adapters.get(agentId); if (!adapter || (run.executionMode === 'delegated_leader' ? !adapter.capabilities().workerValidated : !adapter.capabilities().plannerValidated)) throw new Error(`Planner agent ${agentId} is not validated.`);
+      if (run.executionMode !== 'delegated_leader' && adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
       const head = run.sourceRunId ? this.followUpBase(run.sourceRunId) : await this.plannerBase(workspace.rootPath, workspace.id);
       if (head.exitCode !== 0) throw new Error('Could not determine Git base for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
@@ -154,7 +154,7 @@ export class RunService implements RunServiceContract {
         if (!this.delegated) throw new Error('Delegated Leader runtime is not configured.');
         const status = await this.delegated.execute({ run, task, worktreePath: worktree.path, adapter, deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', setActive: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), clearActive: () => this.active.delete(run.id) });
         const finalGit = await inspectGit(worktree.path);
-        this.runs.setAutonomyPhase(run.id, 'terminal'); this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), failure_reason: status === 'blocked' ? 'Delegated Leader blocked autonomous continuation.' : status === 'timed_out' ? 'Run exceeded the hard timeout.' : status === 'cancelled' ? 'Cancelled by user.' : null, validation_status: this.runs.findRequired(run.id).validationStatus ?? 'not_configured', final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
+        const autonomous = this.runs.findRequired(run.id); this.runs.setAutonomyPhase(run.id, 'terminal'); this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), failure_reason: status === 'blocked' ? autonomous.failureReason ?? 'Delegated Leader blocked autonomous continuation.' : status === 'timed_out' ? 'Run exceeded the hard timeout.' : status === 'cancelled' ? 'Cancelled by user.' : null, validation_status: autonomous.validationStatus ?? 'not_configured', final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
         this.tasks.setStatus(task.id, taskStatus(status)); this.runs.appendEvent(run.id, 'terminal', { status }); return;
       }
       const result = run.executionMode === 'sequential_batch'
@@ -175,11 +175,17 @@ export class RunService implements RunServiceContract {
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(status), { status });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error); const current = this.runs.findRequired(run.id);
+      if (current.status === 'cancel_requested') {
+        this.runs.setStatus(run.id, 'cancelled', { finished_at: new Date().toISOString(), failure_reason: 'Cancelled by user.' });
+        this.runs.appendEvent(run.id, 'terminal', { status: 'cancelled' });
+        if (!isFollowUp) this.tasks.setStatus(task.id, 'cancelled');
+        return;
+      }
       if (current.status === 'timed_out' && current.worktreePath) {
         const finalGit = await inspectGit(current.worktreePath);
         this.runs.setStatus(run.id, 'timed_out', { final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       }
-      if (!terminalStatuses.has(current.status)) { this.runs.setStatus(run.id, 'blocked', { finished_at: new Date().toISOString(), failure_reason: detail }); this.runs.appendEvent(run.id, 'blocked', { detail }); }
+      if (!terminalStatuses.has(current.status)) { const timedOut = Date.now() >= (current.startedAt ? new Date(current.startedAt).getTime() + this.defaults.timeoutMs : Number.MAX_SAFE_INTEGER); this.runs.setStatus(run.id, timedOut ? 'timed_out' : 'blocked', { finished_at: new Date().toISOString(), failure_reason: timedOut ? 'Run exceeded the hard timeout.' : detail }); this.runs.appendEvent(run.id, timedOut ? 'timeout' : 'blocked', { detail }); }
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(this.runs.findRequired(run.id).status), { status: this.runs.findRequired(run.id).status, detail });
       if (!isFollowUp) this.tasks.setStatus(task.id, taskStatus(this.runs.findRequired(run.id).status));
     } finally { this.active.delete(run.id); }
