@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
-import type { PlannerTask, PlannerTaskStatus, Workspace } from '@shared/domain/entities';
+import type { PlannerExecutionMode, PlannerTask, PlannerTaskStatus, Workspace } from '@shared/domain/entities';
 import type { PlannerSelectionCatalog } from '@shared/contracts/ipc';
 
 import { assets } from '../assets';
@@ -24,6 +24,8 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
   const [tasks, setTasks] = useState<PlannerTask[]>([]);
   const [prompt, setPrompt] = useState('');
   const [priority, setPriority] = useState(1);
+  const [executionMode, setExecutionMode] = useState<PlannerExecutionMode>('single_agent');
+  const [batchSteps, setBatchSteps] = useState<string[]>(['']);
   const [catalog, setCatalog] = useState<PlannerSelectionCatalog | null>(null);
   const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
   const [requestedModelId, setRequestedModelId] = useState<string | null>(null);
@@ -50,7 +52,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
 
   const submitTask = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!prompt.trim() || saving) {
+    if (saving || (executionMode === 'single_agent' && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))) {
       return;
     }
 
@@ -62,9 +64,12 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
         requestedAgentId,
         requestedModelId,
         priority,
+        executionMode,
+        batchSteps: executionMode === 'sequential_batch' ? batchSteps : [],
       });
       setTasks((current) => [...current, task].sort(compareTasks));
       setPrompt('');
+      setBatchSteps(['']);
     } catch (error) {
       onError(messageFrom(error));
     } finally {
@@ -102,6 +107,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
               <div className="task-metadata">
                 <span>{task.requestedAgentId ? `Agent ${task.requestedAgentId}` : 'Agent Auto'}</span>
                 <span>{task.requestedModelId ? `Modèle ${task.requestedModelId}` : 'Modèle Auto'}</span>
+                <span>{executionLabel(task.executionMode)}</span>
                 <span className={`priority priority-${Math.min(task.priority, 4)}`}>Priorité {task.priority}</span>
                 <span>Persistée localement</span>
               </div>
@@ -148,15 +154,33 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
               {[1, 2, 3, 4, 5].map((value) => <option value={value} key={value}>{value}</option>)}
             </select>
           </label>
+          <label>
+            <span>Exécution</span>
+            <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => setExecutionMode(event.target.value as PlannerExecutionMode)}>
+              <option value="single_agent">Single Agent</option>
+              <option value="sequential_batch">Sequential Batch</option>
+              <option value="delegated_leader" disabled>Delegated Leader · bientôt disponible</option>
+            </select>
+          </label>
         </div>
+        {executionMode === 'sequential_batch' && <div className="batch-editor" aria-label="Étapes du batch séquentiel">
+          {batchSteps.map((step, index) => <div className="batch-step" key={index}>
+            <span>{index + 1}</span>
+            <input value={step} onChange={(event) => setBatchSteps((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} placeholder={`Instruction de l’étape ${index + 1}`} aria-label={`Étape ${index + 1}`} />
+            <button type="button" onClick={() => setBatchSteps((current) => current.map((item, itemIndex) => itemIndex === index - 1 ? current[index]! : itemIndex === index ? current[index - 1]! : item))} disabled={index === 0}>↑</button>
+            <button type="button" onClick={() => setBatchSteps((current) => current.map((item, itemIndex) => itemIndex === index + 1 ? current[index]! : itemIndex === index ? current[index + 1]! : item))} disabled={index === batchSteps.length - 1}>↓</button>
+            <button type="button" onClick={() => setBatchSteps((current) => current.length === 1 ? current : current.filter((_, itemIndex) => itemIndex !== index))} disabled={batchSteps.length === 1}>×</button>
+          </div>)}
+          <button className="batch-add" type="button" onClick={() => setBatchSteps((current) => [...current, ''])} disabled={batchSteps.length >= 32}>Ajouter une étape</button>
+        </div>}
         <div className="prompt-field">
           <textarea
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Ajouter une tâche automatisée…"
+            placeholder={executionMode === 'sequential_batch' ? 'Contexte partagé facultatif pour toutes les étapes…' : 'Ajouter une tâche automatisée…'}
             aria-label="Prompt de la tâche Planner"
           />
-          <button type="submit" disabled={!prompt.trim() || saving}>
+          <button type="submit" disabled={saving || (executionMode === 'single_agent' && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))}>
             {saving ? 'Enregistrement…' : 'Ajouter à la file'}
           </button>
         </div>
@@ -184,3 +208,5 @@ const availableModels = (catalog: PlannerSelectionCatalog | null, agentId: strin
   if (!catalog) return [];
   return catalog.modelsByAgent[agentId ?? catalog.defaultAgentId] ?? [];
 };
+
+const executionLabel = (mode: PlannerExecutionMode): string => mode === 'single_agent' ? 'Single Agent' : mode === 'sequential_batch' ? 'Sequential Batch' : 'Delegated Leader';

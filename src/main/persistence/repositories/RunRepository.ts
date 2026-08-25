@@ -1,26 +1,27 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Run, RunEvent, RunStatus } from '@shared/domain/entities';
+import type { BatchStep, BatchStepStatus, PlannerExecutionMode, Run, RunEvent, RunStatus } from '@shared/domain/entities';
 
 import type { DatabaseService } from '../DatabaseService';
 
 interface RunRow {
   id: string; task_id: string; workspace_id: string; resolved_agent_id: string; resolved_model_id: string;
-  status: RunStatus; base_sha: string | null; worktree_path: string | null; started_at: string | null;
+  status: RunStatus; execution_mode: PlannerExecutionMode; base_sha: string | null; worktree_path: string | null; started_at: string | null;
   finished_at: string | null; exit_code: number | null; result_summary: string | null; failure_reason: string | null;
   validation_status: string | null; external_session_id: string | null; final_head_sha: string | null;
   final_git_state: string | null; created_at: string;
 }
 interface RunEventRow { id: string; run_id: string; sequence: number; timestamp: string; event_type: string; payload_json: string; }
+interface BatchStepRow { id: string; run_id: string; step_index: number; prompt: string; status: BatchStepStatus; started_at: string | null; finished_at: string | null; external_session_id: string | null; result_summary: string | null; failure_reason: string | null; }
 
 export class RunRepository {
   public constructor(private readonly database: DatabaseService) {}
 
-  public create(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string }): Run {
+  public create(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; executionMode?: PlannerExecutionMode }): Run {
     const id = randomUUID();
     const now = new Date().toISOString();
-    this.database.execute(`INSERT INTO runs(id, task_id, workspace_id, resolved_agent_id, resolved_model_id, status, created_at)
-      VALUES (?, ?, ?, ?, ?, 'preparing', ?)`, id, spec.taskId, spec.workspaceId, spec.resolvedAgentId, spec.resolvedModelId, now);
+    this.database.execute(`INSERT INTO runs(id, task_id, workspace_id, resolved_agent_id, resolved_model_id, execution_mode, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?)`, id, spec.taskId, spec.workspaceId, spec.resolvedAgentId, spec.resolvedModelId, spec.executionMode ?? 'single_agent', now);
     return this.findRequired(id);
   }
   public find(id: string): Run | undefined { const row = this.database.queryOne<RunRow>('SELECT * FROM runs WHERE id = ?', id); return row ? mapRun(row) : undefined; }
@@ -37,8 +38,19 @@ export class RunRepository {
     return { id, runId, sequence: next, timestamp, eventType, payload };
   }
   public listEvents(runId: string): RunEvent[] { return this.database.queryAll<RunEventRow>('SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence', runId).map((row) => ({ id: row.id, runId: row.run_id, sequence: row.sequence, timestamp: row.timestamp, eventType: row.event_type, payload: parsePayload(row.payload_json) })); }
+  public createBatchSteps(runId: string, prompts: readonly string[]): BatchStep[] {
+    prompts.forEach((prompt, stepIndex) => this.database.execute('INSERT INTO run_batch_steps(id, run_id, step_index, prompt, status) VALUES (?, ?, ?, ?, \'pending\')', randomUUID(), runId, stepIndex, prompt));
+    return this.batchSteps(runId);
+  }
+  public batchSteps(runId: string): BatchStep[] { return this.database.queryAll<BatchStepRow>('SELECT * FROM run_batch_steps WHERE run_id = ? ORDER BY step_index', runId).map(mapBatchStep); }
+  public setBatchStepStatus(id: string, status: BatchStepStatus, values: Partial<Pick<BatchStepRow, 'started_at' | 'finished_at' | 'external_session_id' | 'result_summary' | 'failure_reason'>> = {}): BatchStep {
+    const entries = Object.entries({ status, ...values }).filter(([, value]) => value !== undefined);
+    this.database.execute(`UPDATE run_batch_steps SET ${entries.map(([field]) => `${field} = ?`).join(', ')} WHERE id = ?`, ...entries.map(([, value]) => value), id);
+    const row = this.database.queryOne<BatchStepRow>('SELECT * FROM run_batch_steps WHERE id = ?', id); if (!row) throw new Error(`Batch step ${id} was not found.`); return mapBatchStep(row);
+  }
   private update(id: string, fields: Record<string, unknown>): void { const entries = Object.entries(fields).filter(([, value]) => value !== undefined); if (!entries.length) return; this.database.execute(`UPDATE runs SET ${entries.map(([field]) => `${field} = ?`).join(', ')} WHERE id = ?`, ...entries.map(([, value]) => value === undefined ? null : value as string | number | null), id); }
 }
 
-const mapRun = (row: RunRow): Run => ({ id: row.id, taskId: row.task_id, workspaceId: row.workspace_id, resolvedAgentId: row.resolved_agent_id, resolvedModelId: row.resolved_model_id, status: row.status, baseSha: row.base_sha, worktreePath: row.worktree_path, startedAt: row.started_at, finishedAt: row.finished_at, exitCode: row.exit_code, resultSummary: row.result_summary, failureReason: row.failure_reason, validationStatus: row.validation_status, externalSessionId: row.external_session_id, finalHeadSha: row.final_head_sha, finalGitState: row.final_git_state, createdAt: row.created_at });
+const mapRun = (row: RunRow): Run => ({ id: row.id, taskId: row.task_id, workspaceId: row.workspace_id, resolvedAgentId: row.resolved_agent_id, resolvedModelId: row.resolved_model_id, executionMode: row.execution_mode ?? 'single_agent', status: row.status, baseSha: row.base_sha, worktreePath: row.worktree_path, startedAt: row.started_at, finishedAt: row.finished_at, exitCode: row.exit_code, resultSummary: row.result_summary, failureReason: row.failure_reason, validationStatus: row.validation_status, externalSessionId: row.external_session_id, finalHeadSha: row.final_head_sha, finalGitState: row.final_git_state, createdAt: row.created_at });
+const mapBatchStep = (row: BatchStepRow): BatchStep => ({ id: row.id, runId: row.run_id, stepIndex: row.step_index, prompt: row.prompt, status: row.status, startedAt: row.started_at, finishedAt: row.finished_at, externalSessionId: row.external_session_id, resultSummary: row.result_summary, failureReason: row.failure_reason });
 const parsePayload = (value: string): unknown => JSON.parse(value) as unknown;

@@ -10,6 +10,7 @@ import { WorkspaceRepository } from '../src/main/persistence/repositories/Worksp
 import { WorkerRepository } from '../src/main/persistence/repositories/WorkerRepository';
 import { SettingsRepository } from '../src/main/persistence/repositories/SettingsRepository';
 import { WorkspaceService } from '../src/main/services/WorkspaceService';
+import { PlannerService } from '../src/main/services/PlannerService';
 
 const temporaryDirectories: string[] = [];
 
@@ -26,16 +27,16 @@ describe('DatabaseService', () => {
     const databasePath = join(directory, 'nightshift.sqlite');
 
     const firstOpen = new DatabaseService(databasePath);
-    expect(firstOpen.schemaVersion()).toBe(4);
+    expect(firstOpen.schemaVersion()).toBe(5);
     firstOpen.close();
 
     const secondOpen = new DatabaseService(databasePath);
-    expect(secondOpen.schemaVersion()).toBe(4);
+    expect(secondOpen.schemaVersion()).toBe(5);
     expect(
       secondOpen
         .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
         .map(({ name }) => name),
-    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models']));
+    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models', 'planner_batch_steps', 'run_batch_steps']));
     secondOpen.close();
   });
 
@@ -54,8 +55,16 @@ describe('DatabaseService', () => {
     });
 
     expect(task.status).toBe('queued');
+    expect(task.executionMode).toBe('single_agent');
     expect(tasks.listVisible(workspace.id)).toEqual([task]);
     expect(workspaces.list()).toEqual([workspace]);
+    database.close();
+  });
+
+  it('rejects unsupported and invalid Planner execution modes', () => {
+    const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\nightshift-test', 'nightshift-test', true); const planner = new PlannerService(tasks, workspaces);
+    expect(() => planner.createTask({ workspaceId: workspace.id, prompt: 'Delegate.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] })).toThrow('not available yet');
+    expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: [' '] })).toThrow('non-empty ordered steps');
     database.close();
   });
 

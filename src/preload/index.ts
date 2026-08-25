@@ -37,6 +37,7 @@ const api: NightShiftApi = {
   runs: {
     list: (workspaceId) => invoke(IPC_CHANNELS.runsList, { workspaceId }),
     events: (runId) => invoke(IPC_CHANNELS.runsEvents, { runId }),
+    batchSteps: (runId) => invoke(IPC_CHANNELS.runsBatchSteps, { runId }),
     cancel: (runId) => invoke(IPC_CHANNELS.runsCancel, { runId }),
   },
   workers: {

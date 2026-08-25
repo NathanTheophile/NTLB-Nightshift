@@ -21,14 +21,25 @@ export class PlannerService implements PlannerServiceContract {
   public createTask(input: CreatePlannerTaskInput): PlannerTask {
     this.assertWorkspace(input.workspaceId);
     const prompt = input.prompt.trim();
-    if (!prompt) {
+    const executionMode = input.executionMode ?? 'single_agent';
+    const batchSteps = input.batchSteps ?? [];
+    if (executionMode === 'delegated_leader') {
+      throw new Error('Delegated Leader is not available yet.');
+    }
+    if (executionMode !== 'single_agent' && executionMode !== 'sequential_batch') {
+      throw new Error('Unsupported Planner execution mode.');
+    }
+    if (executionMode === 'single_agent' && !prompt) {
       throw new Error('A Planner task requires a prompt.');
+    }
+    if (executionMode === 'sequential_batch' && (!batchSteps.length || batchSteps.length > 32 || batchSteps.some((step) => !step.trim()))) {
+      throw new Error('Sequential Batch requires between 1 and 32 non-empty ordered steps.');
     }
     if (!Number.isInteger(input.priority) || input.priority < 1 || input.priority > 99) {
       throw new Error('Planner priority must be an integer between 1 and 99.');
     }
 
-    const task = this.tasks.create({ ...input, prompt });
+    const task = this.tasks.create({ ...input, prompt, executionMode, batchSteps: batchSteps.map((step) => step.trim()) });
     this.runs?.schedule();
     return task;
   }

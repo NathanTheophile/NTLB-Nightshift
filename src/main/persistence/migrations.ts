@@ -161,4 +161,36 @@ export const migrations: readonly Migration[] = [
       UPDATE workers SET working_directory = '' WHERE working_directory IS NULL;
     `,
   },
+  {
+    version: 5,
+    name: 'planner_execution_modes',
+    sql: `
+      ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'single_agent'
+        CHECK (execution_mode IN ('single_agent', 'sequential_batch', 'delegated_leader'));
+      ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'single_agent'
+        CHECK (execution_mode IN ('single_agent', 'sequential_batch', 'delegated_leader'));
+      CREATE TABLE planner_batch_steps (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+        step_index INTEGER NOT NULL CHECK (step_index >= 0),
+        prompt TEXT NOT NULL,
+        UNIQUE(task_id, step_index)
+      );
+      CREATE TABLE run_batch_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+        step_index INTEGER NOT NULL CHECK (step_index >= 0),
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'timed_out')),
+        started_at TEXT,
+        finished_at TEXT,
+        external_session_id TEXT,
+        result_summary TEXT,
+        failure_reason TEXT,
+        UNIQUE(run_id, step_index)
+      );
+      CREATE INDEX planner_batch_steps_task_idx ON planner_batch_steps(task_id, step_index);
+      CREATE INDEX run_batch_steps_run_idx ON run_batch_steps(run_id, step_index);
+    `,
+  },
 ];

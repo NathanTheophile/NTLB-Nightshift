@@ -1,4 +1,4 @@
-import type { AgentDescriptor, ModelDescriptor, PlannerTask, Run, RunEvent, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
+import type { AgentDescriptor, BatchStep, ModelDescriptor, PlannerExecutionMode, PlannerTask, Run, RunEvent, WorkerConversation, WorkerEvent, WorkerPermissionProfile, IsolationMode, Workspace } from '../domain/entities';
 
 export type WorkspaceEntryKind = 'directory' | 'file' | 'symlink';
 
@@ -25,6 +25,8 @@ export interface CreatePlannerTaskInput {
   prompt: string;
   requestedAgentId: string | null;
   requestedModelId: string | null;
+  executionMode?: PlannerExecutionMode;
+  batchSteps?: string[];
   priority: number;
 }
 
@@ -78,6 +80,7 @@ export const IPC_CHANNELS = {
   plannerSelectionCatalog: 'planner:selection-catalog',
   runsList: 'runs:list',
   runsEvents: 'runs:events',
+  runsBatchSteps: 'runs:batch-steps',
   runsCancel: 'runs:cancel',
   workersList: 'workers:list',
   workersCreate: 'workers:create',
@@ -106,6 +109,7 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
   [IPC_CHANNELS.runsEvents]: { request: { runId: string }; response: RunEvent[] };
+  [IPC_CHANNELS.runsBatchSteps]: { request: { runId: string }; response: BatchStep[] };
   [IPC_CHANNELS.runsCancel]: { request: { runId: string }; response: Run };
   [IPC_CHANNELS.workersList]: { request: { workspaceId: string }; response: WorkerConversation[] };
   [IPC_CHANNELS.workersCreate]: { request: CreateWorkerInput; response: WorkerConversation };
@@ -144,6 +148,7 @@ export interface NightShiftApi {
   runs: {
     list: (workspaceId: string) => Promise<Run[]>;
     events: (runId: string) => Promise<RunEvent[]>;
+    batchSteps: (runId: string) => Promise<BatchStep[]>;
     cancel: (runId: string) => Promise<Run>;
   };
   workers: {
