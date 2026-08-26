@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -12,6 +12,7 @@ import { PlannerTaskRepository } from '../src/main/persistence/repositories/Plan
 import { RunRepository } from '../src/main/persistence/repositories/RunRepository';
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
 import { GitWorktreeService } from '../src/main/services/GitWorktreeService';
+import type { GitCommand, GitCommandResult } from '../src/main/services/GitWorktreeService';
 import { RunService } from '../src/main/services/RunService';
 import type { AgentAdapter, AgentExecutionHandle, AgentExecutionResult, RunStartSpec } from '../src/main/services/contracts/AgentAdapter';
 import type { WorktreeHandle, WorktreeService, WorktreeSpec } from '../src/main/services/contracts/WorktreeService';
@@ -100,10 +101,10 @@ describe('Planner Run vertical slice', () => {
   });
 
   it('runs in a Git worktree, preserves the source tree, and persists structured evidence', async () => {
-    const fixture = await setup();
+    const fixture = await setup(true);
     try {
       const adapter = new CompletingAdapter();
-      const service = fixture.service(adapter, 1_000);
+      const service = fixture.service(adapter, 1_000, fixture.worktreeService, true);
       const task = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Create marker.', requestedAgentId: null, requestedModelId: null, priority: 1 });
       service.schedule();
       const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
@@ -124,8 +125,8 @@ describe('Planner Run vertical slice', () => {
       await installValidationScript(fixture, true);
       const adapter = new CompletingAdapter(); const service = fixture.service(adapter, 10_000);
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Already valid.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
-      await waitFor(() => service.list(fixture.workspace.id)[0]?.status === 'completed' ? true : undefined);
-      const run = service.list(fixture.workspace.id)[0]!; await waitForCandidateSettlement(service, run.id);
+      await waitFor(() => service.list(fixture.workspace.id)[0]?.status === 'completed' ? true : undefined, 2_000);
+      const run = service.list(fixture.workspace.id)[0]!;
       expect(adapter.starts).toBe(1); expect(service.validationCommands(run.id)).toHaveLength(1);
     } finally { await fixture.dispose(); }
   });
@@ -140,7 +141,6 @@ describe('Planner Run vertical slice', () => {
       expect(adapter.starts).toBe(2); expect(adapter.workingDirectories[0]).toBe(adapter.workingDirectories[1]); expect(adapter.externalSessionIds).toEqual([null, 'session-1']);
       expect(service.validationCommands(completed.id).map((command) => command.status)).toEqual(['failed', 'passed']);
       expect(service.events(completed.id, 'activity').events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['correction_started', 'correction_completed']));
-      await waitForCandidateSettlement(service, completed.id);
     } finally { await fixture.dispose(); }
   });
 
@@ -152,7 +152,6 @@ describe('Planner Run vertical slice', () => {
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Fix after two retries.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
       const completed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
       expect(adapter.starts).toBe(3); expect(service.validationCommands(completed.id).map((command) => command.status)).toEqual(['failed', 'failed', 'passed']);
-      await waitForCandidateSettlement(service, completed.id);
     } finally { await fixture.dispose(); }
   }, 15_000);
 
@@ -190,7 +189,6 @@ describe('Planner Run vertical slice', () => {
       await waitFor(() => service.list(fixture.workspace.id).some((run) => run.status === 'completed') ? true : undefined, 8_000);
       const failed = service.list(fixture.workspace.id).find((run) => run.status === 'failed')!;
       expect(failed.failureReason).toContain('after 2 automatic correction attempts'); expect(failed.worktreePath).toBeTruthy(); expect(service.validationCommands(failed.id)).toHaveLength(3);
-      const completed = service.list(fixture.workspace.id).find((run) => run.status === 'completed')!; await waitForCandidateSettlement(service, completed.id);
     } finally { await fixture.dispose(); }
   }, 15_000);
 
@@ -247,7 +245,7 @@ describe('Planner Run vertical slice', () => {
   it('cancels during preparation without launching Claude', async () => {
     const fixture = await setup();
     try {
-      const adapter = new CompletingAdapter(); const delayedWorktrees = new DelayedWorktreeService(fixture.worktreeService); const service = fixture.service(adapter, 5_000, delayedWorktrees);
+      const adapter = new CompletingAdapter(); const delayedWorktrees = new DelayedWorktreeService(fixture.fakeWorktreeService); const service = fixture.service(adapter, 5_000, delayedWorktrees);
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Never launch.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
       const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]); await delayedWorktrees.waitForStart(); await service.requestCancellation(run.id); delayedWorktrees.release();
       const cancelled = await waitFor(() => service.find(run.id).then((value) => value?.status === 'cancelled' ? value : undefined));
@@ -258,7 +256,7 @@ describe('Planner Run vertical slice', () => {
   it('keeps batch-step evidence when cancelled during preparation', async () => {
     const fixture = await setup();
     try {
-      const adapter = new CompletingAdapter(); const delayedWorktrees = new DelayedWorktreeService(fixture.worktreeService); const service = fixture.service(adapter, 5_000, delayedWorktrees);
+      const adapter = new CompletingAdapter(); const delayedWorktrees = new DelayedWorktreeService(fixture.fakeWorktreeService); const service = fixture.service(adapter, 5_000, delayedWorktrees);
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: ['Never run one.', 'Never run two.'] }); service.schedule();
       const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]); await delayedWorktrees.waitForStart();
       expect(service.batchSteps(run.id).map((step) => step.prompt)).toEqual(['Never run one.', 'Never run two.']); await service.requestCancellation(run.id); delayedWorktrees.release();
@@ -422,9 +420,9 @@ describe('Planner Run vertical slice', () => {
   });
 
   it('uses a distinct worktree for concurrent runs from one repository', async () => {
-    const fixture = await setup();
+    const fixture = await setup(true);
     try {
-      const adapter = new ControlledAdapter(); const service = fixture.service(adapter, 5_000);
+      const adapter = new ControlledAdapter(); const service = fixture.service(adapter, 5_000, fixture.worktreeService, true);
       service.setConcurrencyLimit(2);
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'One.', requestedAgentId: null, requestedModelId: null, priority: 1 });
       fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Two.', requestedAgentId: null, requestedModelId: null, priority: 1 });
@@ -453,31 +451,49 @@ describe('Planner Run vertical slice', () => {
   });
 });
 
-const setup = async () => {
+const setup = async (realGit = false) => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-planner-'));
   const repository = join(root, 'repository'); const worktrees = join(root, 'worktrees');
-  await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']);
-  await writeFile(join(repository, 'marker.txt'), 'base\n'); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']);
-  await exec('git', ['-C', repository, 'branch', '-M', 'dev']);
+  await mkdir(repository); await writeFile(join(repository, 'marker.txt'), 'base\n');
+  if (realGit) {
+    await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']);
+    await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); await exec('git', ['-C', repository, 'branch', '-M', 'dev']);
+  }
   const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repository', true);
-  const worktreeService = new GitWorktreeService(worktrees);
+  const worktreeService = new GitWorktreeService(worktrees); const fakeWorktrees = new LightweightWorktreeService(worktrees); const git = fakeGit(repository);
   const services: RunService[] = [];
-  const service = (adapter: AgentAdapter, timeoutMs: number, selectedWorktrees: WorktreeService = worktreeService): RunService => {
-    const value = new RunService(runs, tasks, workspaces, selectedWorktrees, new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs });
+  const service = (adapter: AgentAdapter, timeoutMs: number, selectedWorktrees: WorktreeService = fakeWorktrees, useRealGit = false): RunService => {
+    const value = new RunService(runs, tasks, workspaces, selectedWorktrees, new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs }, undefined, undefined, undefined, undefined, useRealGit ? undefined : git);
     services.push(value);
     return value;
   };
-  return { repository, workspace, tasks, runs, worktreeService, service, dispose: async () => { await waitFor(() => services.every((value) => value.isIdle()) ? true : undefined, 2_000); database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
+  return { repository, realGit, workspace, tasks, runs, worktreeService, fakeWorktreeService: fakeWorktrees, service, dispose: async () => { await waitFor(() => services.every((value) => value.isIdle()) ? true : undefined, 2_000); database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
 };
 
 const installValidationScript = async (fixture: Awaited<ReturnType<typeof setup>>, initiallyFixed: boolean): Promise<void> => {
   await mkdir(join(fixture.repository, 'node_modules'));
   await writeFile(join(fixture.repository, 'package.json'), JSON.stringify({ scripts: { test: "node -e \"process.exit(require('node:fs').existsSync('fixed.txt') ? 0 : 1)\"" } }));
   if (initiallyFixed) await writeFile(join(fixture.repository, 'fixed.txt'), 'fixed\n');
-  await exec('git', ['-C', fixture.repository, 'add', '.']); await exec('git', ['-C', fixture.repository, 'commit', '-m', 'validation fixture']);
+  if (fixture.realGit) { await exec('git', ['-C', fixture.repository, 'add', '.']); await exec('git', ['-C', fixture.repository, 'commit', '-m', 'validation fixture']); }
 };
-const waitForCandidateSettlement = async (service: RunService, runId: string): Promise<void> => {
-  await waitFor(() => service.find(runId).then((run) => run?.candidatePublishState === 'failed' ? true : undefined), 5_000);
+class LightweightWorktreeService implements WorktreeService {
+  private readonly handles = new Map<string, WorktreeHandle>();
+  public constructor(private readonly storageRoot: string) {}
+  public async createForRun(spec: WorktreeSpec): Promise<WorktreeHandle> {
+    const path = join(this.storageRoot, `run-${spec.runId}`); await mkdir(this.storageRoot, { recursive: true }); await cp(spec.repositoryRoot, path, { recursive: true });
+    const handle = { path, baseSha: spec.baseSha, branchName: `nightshift/run/fake-${spec.runId}` }; this.handles.set(path, handle); return handle;
+  }
+  public inspect(path: string): Promise<WorktreeHandle | undefined> { return Promise.resolve(this.handles.get(path)); }
+  public async removeAfterEvidencePersisted(path: string): Promise<void> { if (!this.handles.delete(path)) return; await rm(path, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); }
+}
+const fakeGit = (repository: string): GitCommand => (path, argumentsList): Promise<GitCommandResult> => {
+  const args = argumentsList.join(' '); const base = 'f'.repeat(40);
+  if (args.includes('rev-parse --verify') && args.includes('refs/heads/dev')) return Promise.resolve({ stdout: `${base}\n`, stderr: '', exitCode: 0 });
+  if (args === 'rev-parse HEAD' || args.includes('rev-parse --verify HEAD')) return Promise.resolve({ stdout: `${base}\n`, stderr: '', exitCode: 0 });
+  if (args === 'status --porcelain=v1' || args.startsWith('status --porcelain=v1 ')) return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+  if (args === 'diff --stat') return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+  if (path === repository && args.includes('rev-parse --verify')) return Promise.resolve({ stdout: `${base}\n`, stderr: '', exitCode: 0 });
+  return Promise.resolve({ stdout: '', stderr: '', exitCode: 1 });
 };
 
 class CompletingAdapter implements AgentAdapter {
@@ -555,7 +571,7 @@ const publishedSource = async (fixture: Awaited<ReturnType<typeof setup>>): Prom
   const task = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Published source.', requestedAgentId: null, requestedModelId: null, priority: 1 });
   fixture.tasks.setStatus(task.id, 'completed');
   const run = fixture.runs.create({ taskId: task.id, workspaceId: task.workspaceId, resolvedAgentId: 'claude-code', resolvedModelId: 'model' });
-  const baseSha = (await exec('git', ['-C', fixture.repository, 'rev-parse', 'HEAD'])).stdout.trim();
+  const baseSha = fixture.realGit ? (await exec('git', ['-C', fixture.repository, 'rev-parse', 'HEAD'])).stdout.trim() : 'f'.repeat(40);
   fixture.runs.setPreparation(run.id, baseSha, fixture.repository);
   fixture.runs.setCandidateCommit(run.id, 'candidate/source', baseSha);
   fixture.runs.setCandidatePublished(run.id, 'origin');

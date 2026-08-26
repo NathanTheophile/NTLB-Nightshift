@@ -1,6 +1,6 @@
 import type { AgentAdapter, AgentExecutionResult } from './contracts/AgentAdapter';
 import type { RunService as RunServiceContract } from './contracts/RunService';
-import { runGit, type GitCommandResult } from './GitWorktreeService';
+import { runGit, type GitCommand, type GitCommandResult } from './GitWorktreeService';
 import { assertNodeValidationDependencies, ProjectValidationService } from './ProjectValidationService';
 import { WindowsProcessSupervisor } from './WindowsProcessSupervisor';
 import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
@@ -34,7 +34,7 @@ export class RunService implements RunServiceContract {
   private configuredTimeoutMs: number | undefined;
   private scheduling = false;
   private scheduleRequested = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly candidateGitTimeoutMs = CANDIDATE_GIT_TIMEOUT_MS, private readonly artifacts?: RunArtifactCleaner) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly candidateGitTimeoutMs = CANDIDATE_GIT_TIMEOUT_MS, private readonly artifacts?: RunArtifactCleaner, private readonly git: GitCommand = runGit) { this.validation = new ProjectValidationService(runs, validationSupervisor, git); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -137,15 +137,15 @@ export class RunService implements RunServiceContract {
       || run.candidateBranchName !== candidateBranchForRunName(basename(run.worktreePath))) return;
     const ref = `refs/heads/${run.candidateBranchName}`;
     const [head, message] = await Promise.all([
-      runGit(repositoryRoot, ['rev-parse', '--verify', ref]),
-      runGit(repositoryRoot, ['log', '-1', '--format=%B', ref]),
+      this.git(repositoryRoot, ['rev-parse', '--verify', ref]),
+      this.git(repositoryRoot, ['log', '-1', '--format=%B', ref]),
     ]);
     if (head.exitCode !== 0) return;
     if (head.stdout.trim() !== run.candidateCommitSha || message.stdout.trim() !== `NightShift candidate: ${run.id}`) {
       console.warn(`[Planner] Preserving unproven local candidate branch ${run.candidateBranchName}.`);
       return;
     }
-    const removed = await runGit(repositoryRoot, ['branch', '-D', run.candidateBranchName]);
+    const removed = await this.git(repositoryRoot, ['branch', '-D', run.candidateBranchName]);
     if (removed.exitCode !== 0) console.warn(`[Planner] Could not remove local candidate branch ${run.candidateBranchName}: ${removed.stderr.trim() || removed.stdout.trim()}`);
   }
   // Scheduling work is intentionally synchronous until the launched Run promises yield.
@@ -226,7 +226,7 @@ export class RunService implements RunServiceContract {
         } else if (validationStatus === 'failed') status = 'failed';
         else if (validationStatus === 'interrupted' && Date.now() >= deadline) { status = 'timed_out'; this.runs.appendEvent(run.id, 'timeout', { phase: 'validation' }); }
       }
-      const finalGit = await inspectGit(worktree.path);
+      const finalGit = await inspectGit(worktree.path, this.git);
       if (!isFollowUp) this.tasks.setStatus(task.id, taskStatus(status));
       this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), exit_code: result.exitCode, result_summary: result.terminalEvent?.raw ?? null, failure_reason: status === 'completed' ? null : status === 'timed_out' ? 'Run exceeded the hard timeout.' : result.failureReason ?? (cancelled ? 'Cancelled by user.' : 'Run failed.'), validation_status: this.runs.findRequired(run.id).validationStatus ?? 'not_configured', external_session_id: result.externalSessionId, final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       this.runs.appendEvent(run.id, 'terminal', { status, exitCode: result.exitCode, signal: result.signal });
@@ -241,7 +241,7 @@ export class RunService implements RunServiceContract {
         return;
       }
       if (current.status === 'timed_out' && current.worktreePath) {
-        const finalGit = await inspectGit(current.worktreePath);
+        const finalGit = await inspectGit(current.worktreePath, this.git);
         this.runs.setStatus(run.id, 'timed_out', { final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       }
       if (!terminalStatuses.has(current.status)) { const timedOut = Date.now() >= (current.startedAt ? new Date(current.startedAt).getTime() + runTimeoutMs : Number.MAX_SAFE_INTEGER); this.runs.setStatus(run.id, timedOut ? 'timed_out' : 'blocked', { finished_at: new Date().toISOString(), failure_reason: timedOut ? 'Run exceeded the hard timeout.' : detail }); this.runs.appendEvent(run.id, timedOut ? 'timeout' : 'blocked', { detail }); }
@@ -250,7 +250,7 @@ export class RunService implements RunServiceContract {
     } finally { this.active.delete(run.id); }
   }
   private async publishCandidateAutomatically(runId: string, worktreePath: string): Promise<void> {
-    const changes = await runGit(worktreePath, ['status', '--porcelain=v1']);
+    const changes = await this.git(worktreePath, ['status', '--porcelain=v1']);
     if (changes.exitCode !== 0) {
       this.runs.setCandidatePublishFailure(runId, 'Could not inspect candidate changes.');
       this.runs.appendEvent(runId, 'candidate_publish_failed', { reason: 'Could not inspect candidate changes.' });
@@ -276,20 +276,20 @@ export class RunService implements RunServiceContract {
       if (!workspace?.isGit || !run.worktreePath) throw new Error('This Run has no publishable Git worktree.');
       const worktreePath = run.worktreePath;
       const [worktreeRoot, worktreeGitDir, workspaceGitDir] = await Promise.all([
-        runGit(worktreePath, ['rev-parse', '--show-toplevel']),
-        runGit(worktreePath, ['rev-parse', '--git-common-dir']),
-        runGit(workspace.rootPath, ['rev-parse', '--git-common-dir']),
+        this.git(worktreePath, ['rev-parse', '--show-toplevel']),
+        this.git(worktreePath, ['rev-parse', '--git-common-dir']),
+        this.git(workspace.rootPath, ['rev-parse', '--git-common-dir']),
       ]);
       if (worktreeRoot.exitCode !== 0 || worktreeGitDir.exitCode !== 0 || workspaceGitDir.exitCode !== 0 || resolve(worktreePath) !== resolve(worktreeRoot.stdout.trim()) || resolve(worktreePath, worktreeGitDir.stdout.trim()) !== resolve(workspace.rootPath, workspaceGitDir.stdout.trim())) throw new Error('Recorded Run worktree does not belong to its Workspace repository.');
       const branchName = candidateBranchForRunName(basename(worktreePath));
       if (!run.candidateCommitSha) {
-        const branch = await runGit(worktreePath, ['rev-parse', '--verify', `refs/heads/${branchName}`]);
-        const currentBranch = await runGit(worktreePath, ['branch', '--show-current']);
+        const branch = await this.git(worktreePath, ['rev-parse', '--verify', `refs/heads/${branchName}`]);
+        const currentBranch = await this.git(worktreePath, ['branch', '--show-current']);
         if (branch.exitCode === 0) {
-          const message = await runGit(worktreePath, ['log', '-1', '--format=%s', branchName]);
+          const message = await this.git(worktreePath, ['log', '-1', '--format=%s', branchName]);
           if (currentBranch.stdout.trim() !== branchName) throw new Error(`Candidate branch ${branchName} already exists and is not owned by this Run.`);
           if (message.stdout.trim() === `NightShift candidate: ${run.id}`) {
-            const parent = await runGit(worktreePath, ['rev-parse', '--verify', `${branchName}^`]);
+            const parent = await this.git(worktreePath, ['rev-parse', '--verify', `${branchName}^`]);
             if (parent.exitCode !== 0 || parent.stdout.trim() !== run.baseSha) throw new Error(`Candidate branch ${branchName} does not match this Run base.`);
             run = this.runs.setCandidateCommit(run.id, branchName, branch.stdout.trim());
             this.runs.appendEvent(run.id, 'candidate_commit_recovered', { branchName, commitSha: run.candidateCommitSha });
@@ -298,29 +298,29 @@ export class RunService implements RunServiceContract {
           }
         }
         if (!run.candidateCommitSha) {
-          const changes = await runGit(worktreePath, ['status', '--porcelain=v1']);
+          const changes = await this.git(worktreePath, ['status', '--porcelain=v1']);
           if (changes.exitCode !== 0) throw new Error('Could not inspect candidate changes.');
           if (!changes.stdout.trim()) throw new Error('Cannot publish a candidate for a Run with no changes.');
           if (branch.exitCode === 0) {
             if (currentBranch.stdout.trim() !== branchName) throw new Error(`Candidate branch ${branchName} already exists and is not owned by this Run.`);
           } else {
-            const created = await runGit(worktreePath, ['switch', '-c', branchName]);
+            const created = await this.git(worktreePath, ['switch', '-c', branchName]);
             if (created.exitCode !== 0) throw new Error(gitFailure('Could not create candidate branch.', created));
           }
-          const staged = await runGit(worktreePath, ['add', '-A']); if (staged.exitCode !== 0) throw new Error(gitFailure('Could not stage candidate changes.', staged));
-          const committed = await runGit(worktreePath, ['commit', '-m', `NightShift candidate: ${run.id}`]); if (committed.exitCode !== 0) throw new Error(gitFailure('Could not create candidate commit.', committed));
-          const sha = await runGit(worktreePath, ['rev-parse', '--verify', 'HEAD']); if (sha.exitCode !== 0) throw new Error('Could not determine candidate commit SHA.');
+          const staged = await this.git(worktreePath, ['add', '-A']); if (staged.exitCode !== 0) throw new Error(gitFailure('Could not stage candidate changes.', staged));
+          const committed = await this.git(worktreePath, ['commit', '-m', `NightShift candidate: ${run.id}`]); if (committed.exitCode !== 0) throw new Error(gitFailure('Could not create candidate commit.', committed));
+          const sha = await this.git(worktreePath, ['rev-parse', '--verify', 'HEAD']); if (sha.exitCode !== 0) throw new Error('Could not determine candidate commit SHA.');
           run = this.runs.setCandidateCommit(run.id, branchName, sha.stdout.trim()); this.runs.appendEvent(run.id, 'candidate_committed', { branchName, commitSha: run.candidateCommitSha });
         }
       }
       if (run.candidatePublishState === 'published') return run;
       if (!run.candidateBranchName || !run.candidateCommitSha) throw new Error('Candidate commit metadata is incomplete.');
-      const localCandidate = await runGit(worktreePath, ['rev-parse', '--verify', `refs/heads/${run.candidateBranchName}`]);
+      const localCandidate = await this.git(worktreePath, ['rev-parse', '--verify', `refs/heads/${run.candidateBranchName}`]);
       if (localCandidate.exitCode !== 0 || localCandidate.stdout.trim() !== run.candidateCommitSha) throw new Error('Local candidate branch no longer matches the recorded candidate commit.');
       if (!this.runs.tryBeginCandidatePublish(run.id)) throw new Error('Candidate publishing is already in progress.');
-      const remote = 'origin'; const remoteUrl = await runGit(worktreePath, ['remote', 'get-url', remote]);
+      const remote = 'origin'; const remoteUrl = await this.git(worktreePath, ['remote', 'get-url', remote]);
       if (remoteUrl.exitCode !== 0) throw new Error('Candidate publishing requires the configured origin remote.');
-      const remoteHead = await runGit(worktreePath, ['ls-remote', '--heads', remote, `refs/heads/${run.candidateBranchName}`], candidateGitOptions(this.candidateGitTimeoutMs));
+      const remoteHead = await this.git(worktreePath, ['ls-remote', '--heads', remote, `refs/heads/${run.candidateBranchName}`], candidateGitOptions(this.candidateGitTimeoutMs));
       if (remoteHead.exitCode !== 0) throw new Error(gitFailure('Could not inspect remote candidate branch.', remoteHead));
       const publishedSha = remoteHead.stdout.trim().split(/\s+/, 1)[0];
       if (publishedSha) {
@@ -328,7 +328,7 @@ export class RunService implements RunServiceContract {
         this.runs.appendEvent(run.id, 'candidate_publish_reused', { branchName: run.candidateBranchName, commitSha: run.candidateCommitSha, remote });
         return this.runs.setCandidatePublished(run.id, remote);
       }
-      const pushed = await runGit(worktreePath, ['push', remote, `refs/heads/${run.candidateBranchName}:refs/heads/${run.candidateBranchName}`], candidateGitOptions(this.candidateGitTimeoutMs));
+      const pushed = await this.git(worktreePath, ['push', remote, `refs/heads/${run.candidateBranchName}:refs/heads/${run.candidateBranchName}`], candidateGitOptions(this.candidateGitTimeoutMs));
       if (pushed.exitCode !== 0) throw new Error(gitFailure('Could not push candidate branch.', pushed));
       this.runs.appendEvent(run.id, 'candidate_published', { branchName: run.candidateBranchName, commitSha: run.candidateCommitSha, remote });
       return this.runs.setCandidatePublished(run.id, remote);
@@ -421,7 +421,7 @@ export class RunService implements RunServiceContract {
   private async finalizeIfCancellationRequested(runId: string, taskId: string, batchSteps: readonly BatchStep[] = []): Promise<boolean> {
     const run = this.runs.findRequired(runId);
     if (run.status !== 'cancel_requested') return false;
-    const finalGit = run.worktreePath ? await inspectGit(run.worktreePath) : null;
+    const finalGit = run.worktreePath ? await inspectGit(run.worktreePath, this.git) : null;
     this.runs.setStatus(runId, 'cancelled', {
       finished_at: new Date().toISOString(),
       failure_reason: 'Cancelled before agent execution.',
@@ -448,7 +448,7 @@ export class RunService implements RunServiceContract {
     const active = this.active.get(runId); if (active) { active.timedOut = true; await active.cancel(); await completion.catch(() => undefined); }
   }
   private async plannerBase(rootPath: string, workspaceId: string): Promise<GitCommandResult> {
-    const sha = await resolveEffectiveDevBase(rootPath, workspaceId, this.settings);
+    const sha = await resolveEffectiveDevBase(rootPath, workspaceId, this.settings, this.git);
     return { stdout: `${sha}\n`, stderr: '', exitCode: 0 };
   }
 }
@@ -456,7 +456,7 @@ const taskStatus = (status: RunStatus): 'completed' | 'failed' | 'blocked' | 'ca
 class RunTimeoutError extends Error {}
 const cancelledResult = (): AgentExecutionResult => ({ handleId: 'cancelled-before-step', succeeded: false, failureReason: 'Cancelled by user.', exitCode: null, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' });
 const batchTerminalEvent = (status: RunStatus): string => status === 'completed' ? 'batch_completed' : status === 'cancelled' ? 'batch_cancelled' : status === 'timed_out' ? 'batch_timed_out' : 'batch_failed';
-const inspectGit = async (path: string): Promise<{ head: string | null; status: string; diffStat: string }> => { const [head, status, diffStat] = await Promise.all([runGit(path, ['rev-parse', 'HEAD']), runGit(path, ['status', '--porcelain=v1']), runGit(path, ['diff', '--stat'])]); return { head: head.exitCode === 0 ? head.stdout.trim() : null, status: status.stdout, diffStat: diffStat.stdout }; };
+const inspectGit = async (path: string, git: GitCommand = runGit): Promise<{ head: string | null; status: string; diffStat: string }> => { const [head, status, diffStat] = await Promise.all([git(path, ['rev-parse', 'HEAD']), git(path, ['status', '--porcelain=v1']), git(path, ['diff', '--stat'])]); return { head: head.exitCode === 0 ? head.stdout.trim() : null, status: status.stdout, diffStat: diffStat.stdout }; };
 const boundedDiagnostic = (value: string): { value: string; truncated: boolean } => {
   const bytes = Buffer.byteLength(value);
   return { value: bytes > MAX_CORRECTION_DIAGNOSTIC_BYTES ? Buffer.from(value).subarray(0, MAX_CORRECTION_DIAGNOSTIC_BYTES).toString('utf8') : value, truncated: bytes > MAX_CORRECTION_DIAGNOSTIC_BYTES };

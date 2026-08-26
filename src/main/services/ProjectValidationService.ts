@@ -6,7 +6,7 @@ import type { ValidationStatus } from '@shared/domain/entities';
 
 import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
-import { runGit } from './GitWorktreeService';
+import { runGit, type GitCommand } from './GitWorktreeService';
 
 const PROFILE_ID = 'node-package-scripts-v1';
 const SCRIPT_ORDER = ['typecheck', 'lint', 'test', 'build'] as const;
@@ -19,10 +19,10 @@ interface ValidationCommand { script: string | null; command: string; }
 export interface ValidationExecutionOptions { deadline: number; isCancellationRequested: () => boolean; onProcessStarted?: (cancel: () => Promise<void>) => void; onProcessFinished?: () => void; }
 
 export class ProjectValidationService {
-  public constructor(private readonly runs: RunRepository, private readonly supervisor: ProcessSupervisor) {}
+  public constructor(private readonly runs: RunRepository, private readonly supervisor: ProcessSupervisor, private readonly git: GitCommand = runGit) {}
 
   public async validate(runId: string, worktreePath: string, options: ValidationExecutionOptions): Promise<ValidationStatus> {
-    const commands = await resolveCommands(worktreePath);
+    const commands = await resolveCommands(worktreePath, this.git);
     if (!commands.length) return 'not_configured';
     this.runs.setValidationStatus(runId, 'running'); this.runs.appendEvent(runId, 'validation_started', { profileId: PROFILE_ID, commandCount: commands.length });
     for (const spec of commands) {
@@ -74,18 +74,18 @@ export const assertNodeValidationDependencies = async (repositoryRoot: string): 
   throw new Error(SOURCE_DEPENDENCIES_UNAVAILABLE);
 };
 
-const resolveCommands = async (worktreePath: string): Promise<ValidationCommand[]> => {
+const resolveCommands = async (worktreePath: string, git: GitCommand = runGit): Promise<ValidationCommand[]> => {
   try {
     const parsed = JSON.parse(await readFile(join(worktreePath, 'package.json'), 'utf8')) as PackageJson; const scripts = parsed.scripts;
     const npmCommands = scripts && typeof scripts === 'object' ? SCRIPT_ORDER.filter((script) => typeof scripts[script] === 'string' && scripts[script].trim()).map((script) => ({ script, command: `npm run ${script}` })) : [];
     if (!npmCommands.length) return [];
-    const changedPaths = await resolveChangedPaths(worktreePath);
+    const changedPaths = await resolveChangedPaths(worktreePath, git);
     if (changedPaths?.length && changedPaths.every(isLightweightPath)) return [{ script: null, command: 'git diff --check' }];
     return npmCommands;
   } catch { return []; }
 };
-const resolveChangedPaths = async (worktreePath: string): Promise<string[] | null> => {
-  const status = await runGit(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
+const resolveChangedPaths = async (worktreePath: string, git: GitCommand = runGit): Promise<string[] | null> => {
+  const status = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
   if (status.exitCode !== 0) return null;
   return status.stdout.split(/\r?\n/).filter(Boolean).flatMap((line) => {
     const path = line.slice(3).trim();
