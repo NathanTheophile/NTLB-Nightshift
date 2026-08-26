@@ -14,6 +14,7 @@ import type { RunNavigationItem } from '@shared/contracts/ipc';
 import { resolve } from 'node:path';
 import { resolveEffectiveDevBase } from './ReviewIntegrationService';
 import type { DelegatedRunOrchestrator } from './DelegatedRunOrchestrator';
+import { supportsExecutionSelection } from './PlannerExecutionCompatibility';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 
@@ -140,8 +141,8 @@ export class RunService implements RunServiceContract {
     this.runs.appendEvent(run.id, 'preparing', { agentId, modelId, executionMode: run.executionMode });
     try {
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
-      const adapter = this.adapters.get(agentId); if (!adapter || (run.executionMode === 'delegated_leader' ? !adapter.capabilities().workerValidated : !adapter.capabilities().plannerValidated)) throw new Error(`Planner agent ${agentId} is not validated.`);
-      if (run.executionMode !== 'delegated_leader' && adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
+      const adapter = this.adapters.get(agentId);
+      if (!adapter || !supportsExecutionSelection(adapter, run.executionMode, modelId)) throw new Error(`Planner selection ${agentId}/${modelId} is not validated for ${run.executionMode}.`);
       const head = run.sourceRunId ? this.followUpBase(run.sourceRunId) : await this.plannerBase(workspace.rootPath, workspace.id);
       if (head.exitCode !== 0) throw new Error('Could not determine Git base for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;

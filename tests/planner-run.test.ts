@@ -18,7 +18,7 @@ import type { WorktreeHandle, WorktreeService, WorktreeSpec } from '../src/main/
 import type { AgentCapabilities, AgentDescriptor, Run } from '../src/shared/domain/entities';
 
 const exec = promisify(execFile);
-const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
+const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, delegatedValidated: true, workerValidated: false, renderMode: 'structured' };
 
 describe('Planner Run vertical slice', () => {
   it('persists the supplied base SHA when creating an attempt', async () => {
@@ -382,7 +382,7 @@ const setup = async () => {
 };
 
 class CompletingAdapter implements AgentAdapter {
-  public readonly id = 'claude-code'; public starts = 0; public readonly workingDirectories: string[] = []; public capabilities = (): AgentCapabilities => capabilities; public supportsWorkerModel = (): boolean => true; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
+  public readonly id = 'claude-code'; public starts = 0; public readonly workingDirectories: string[] = []; public capabilities = (): AgentCapabilities => capabilities; public supportsWorkerModel = (): boolean => true; public supportsExecutionMode = (): boolean => true; public supportsModelForExecutionMode = (): boolean => true; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
   public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; this.workingDirectories.push(spec.workingDirectory); const event = { sequence: 0, timestamp: new Date().toISOString(), raw: '{"type":"system"}', parsed: { type: 'system' }, type: 'system', externalSessionId: 'session-test', terminal: false, parseError: null }; spec.onProtocolEvent?.(event); await writeFile(join(spec.workingDirectory, 'marker.txt'), 'changed by planner\n'); return { handleId: randomUUID(), externalSessionId: 'session-test', events: [event], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'session-test', events: [event], terminalEvent: { ...event, terminal: true }, stderr: '' }) }; }
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('not implemented')); } public cancel(): Promise<void> { return Promise.resolve(); }
 }

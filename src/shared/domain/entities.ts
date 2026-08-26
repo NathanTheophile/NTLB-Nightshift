@@ -255,6 +255,7 @@ export interface AgentCapabilities {
   imageInput: boolean;
   subagents: boolean;
   plannerValidated: boolean;
+  delegatedValidated: boolean;
   workerValidated: boolean;
   renderMode: AgentRenderMode;
 }
