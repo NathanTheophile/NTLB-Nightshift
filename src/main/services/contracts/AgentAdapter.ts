@@ -6,6 +6,8 @@ export interface RunStartSpec {
   workingDirectory: string;
   prompt: string;
   modelId: string;
+  /** Resume the prior Planner turn when the adapter supports it. */
+  externalSessionId?: string | null;
   onProtocolEvent?: (event: AgentProtocolEvent) => void;
 }
 

@@ -40,6 +40,7 @@ export const buildClaudeRunArguments = (spec: RunStartSpec): readonly string[] =
     ...plannerBashPermissions,
     '--output-format',
     'stream-json',
+    ...(spec.externalSessionId ? ['--resume', spec.externalSessionId] : []),
     spec.prompt,
   ];
 };

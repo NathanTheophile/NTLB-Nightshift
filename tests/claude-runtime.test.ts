@@ -82,6 +82,11 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
     expect(parser.finish()).toEqual([]);
   });
 
+  it('resumes a Planner correction with the previous Claude session', () => {
+    const argumentsList = buildClaudeRunArguments({ runId: 'run-1', workspaceId: 'workspace-1', workingDirectory: 'C:\\scratch\\probe', modelId: 'provider/model', prompt: 'Correct the failed validation.', externalSessionId: 'claude-session-1' });
+    expect(argumentsList).toEqual(expect.arrayContaining(['--resume', 'claude-session-1']));
+  });
+
   it('maps Worker permissions to bounded Claude tools and resumes a validated session', () => {
     const readOnly = buildClaudeWorkerArguments({ workerId: 'worker-1', workspaceId: 'workspace-1', workingDirectory: 'C:\\repo', modelId: 'model', permissionProfile: 'read_only', isolationMode: 'direct_workspace', prompt: 'Inspect this project.', externalSessionId: null });
     const resumedWrite = buildClaudeWorkerArguments({ workerId: 'worker-1', workspaceId: 'workspace-1', workingDirectory: 'C:\\repo', modelId: 'model', permissionProfile: 'workspace_write', isolationMode: 'direct_workspace', prompt: 'Apply the fix.', externalSessionId: 'claude-session-1' });

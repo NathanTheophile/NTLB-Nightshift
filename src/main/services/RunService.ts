@@ -18,6 +18,8 @@ import { candidateBranchForRunName } from './RunNaming';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 const CANDIDATE_GIT_TIMEOUT_MS = 3 * 60_000;
+const MAX_AUTOMATIC_CORRECTIONS = 2;
+const MAX_CORRECTION_EVIDENCE_CHARS = 12_000;
 const candidateGitOptions = (timeoutMs: number) => ({ timeoutMs, environment: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } });
 
 export interface PlannerRunDefaults { agentId: string; modelId: string; timeoutMs: number; }
@@ -205,7 +207,7 @@ export class RunService implements RunServiceContract {
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
       const deadline = Date.now() + runTimeoutMs;
-      const result = run.executionMode === 'sequential_batch'
+      let result = run.executionMode === 'sequential_batch'
         ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, deadline)
         : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), deadline);
       const current = this.runs.findRequired(run.id); const cancelled = current.status === 'cancel_requested';
@@ -214,7 +216,11 @@ export class RunService implements RunServiceContract {
         const validationStatus = await this.validation.validate(run.id, worktree.path, { deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', onProcessStarted: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), onProcessFinished: () => this.active.delete(run.id) });
         const afterValidation = this.runs.findRequired(run.id);
         if (afterValidation.status === 'cancel_requested') status = 'cancelled';
-        else if (validationStatus === 'failed') status = 'failed';
+        else if (validationStatus === 'failed' && run.executionMode === 'single_agent') {
+          result = await this.correctValidationFailures(run.id, workspace.id, worktree.path, modelId, adapter, task.prompt, result, deadline);
+          const correctedRun = this.runs.findRequired(run.id);
+          status = correctedRun.status === 'timed_out' ? 'timed_out' : correctedRun.status === 'cancel_requested' ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
+        } else if (validationStatus === 'failed') status = 'failed';
         else if (validationStatus === 'interrupted' && Date.now() >= deadline) { status = 'timed_out'; this.runs.appendEvent(run.id, 'timeout', { phase: 'validation' }); }
       }
       const finalGit = await inspectGit(worktree.path);
@@ -329,11 +335,45 @@ export class RunService implements RunServiceContract {
       throw error;
     }
   }
-  private async executeSingle(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, prompt: string, deadline: number): Promise<AgentExecutionResult> {
-    const handle = await adapter.startRun({ runId, workspaceId, workingDirectory, modelId, prompt, onProtocolEvent: (event) => this.runs.appendEvent(runId, 'agent_protocol', event, event.timestamp) });
+  private async executeSingle(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, prompt: string, deadline: number, externalSessionId: string | null = null): Promise<AgentExecutionResult> {
+    const handle = await adapter.startRun({ runId, workspaceId, workingDirectory, modelId, prompt, externalSessionId, onProtocolEvent: (event) => this.runs.appendEvent(runId, 'agent_protocol', event, event.timestamp) });
     this.active.set(runId, { cancel: () => adapter.cancel(handle.handleId), timedOut: false });
     if (this.runs.findRequired(runId).status === 'cancel_requested') await adapter.cancel(handle.handleId);
     return this.waitWithTimeout(runId, handle.completion, Math.max(0, deadline - Date.now()));
+  }
+  private async correctValidationFailures(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, originalPrompt: string, initialResult: AgentExecutionResult, deadline: number): Promise<AgentExecutionResult> {
+    let result = initialResult;
+    let externalSessionId = initialResult.externalSessionId;
+    for (let attempt = 1; attempt <= MAX_AUTOMATIC_CORRECTIONS; attempt += 1) {
+      const run = this.runs.findRequired(runId);
+      if (run.status === 'cancel_requested') return cancelledResult();
+      if (Date.now() >= deadline) { await this.timeoutRun(runId, Promise.resolve()); throw new RunTimeoutError(); }
+      const evidence = this.latestFailedValidationEvidence(runId);
+      this.runs.appendEvent(runId, 'correction_started', { attempt, resumed: Boolean(externalSessionId && adapter.capabilities().resume) });
+      result = await this.executeSingle(runId, workspaceId, workingDirectory, modelId, adapter, correctionPrompt(originalPrompt, evidence), deadline, adapter.capabilities().resume ? externalSessionId : null);
+      externalSessionId = result.externalSessionId ?? externalSessionId;
+      const current = this.runs.findRequired(runId);
+      if (current.status === 'cancel_requested') return cancelledResult();
+      if (!result.succeeded) {
+        this.runs.appendEvent(runId, 'correction_failed', { attempt, reason: result.failureReason });
+        return result;
+      }
+      this.runs.appendEvent(runId, 'correction_completed', { attempt, externalSessionId });
+      const validationStatus = await this.validation.validate(runId, workingDirectory, { deadline, isCancellationRequested: () => this.runs.findRequired(runId).status === 'cancel_requested', onProcessStarted: (cancel) => this.active.set(runId, { cancel, timedOut: false }), onProcessFinished: () => this.active.delete(runId) });
+      const afterValidation = this.runs.findRequired(runId);
+      if (afterValidation.status === 'cancel_requested') return cancelledResult();
+      if (validationStatus === 'passed' || validationStatus === 'not_configured') return result;
+      if (validationStatus === 'interrupted') {
+        if (Date.now() >= deadline) { this.runs.appendEvent(runId, 'timeout', { phase: 'validation' }); await this.timeoutRun(runId, Promise.resolve()); throw new RunTimeoutError(); }
+        return cancelledResult();
+      }
+    }
+    return { ...result, succeeded: false, failureReason: `Deterministic validation remained failing after ${MAX_AUTOMATIC_CORRECTIONS} automatic correction attempts.` };
+  }
+  private latestFailedValidationEvidence(runId: string): { command: string; exitCode: number | null; output: string; outputTruncated: boolean } {
+    const failed = this.runs.validationCommands(runId).filter((command) => command.status === 'failed').at(-1);
+    if (!failed) throw new Error('No failed validation evidence is available for automatic correction.');
+    return { command: failed.command, exitCode: failed.exitCode, output: failed.output, outputTruncated: failed.outputTruncated };
   }
   private async executeBatch(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, sharedPrompt: string, steps: readonly BatchStep[], deadline: number): Promise<AgentExecutionResult> {
     this.runs.appendEvent(runId, 'batch_started', { stepCount: steps.length });
@@ -413,6 +453,26 @@ const cancelledResult = (): AgentExecutionResult => ({ handleId: 'cancelled-befo
 const batchTerminalEvent = (status: RunStatus): string => status === 'completed' ? 'batch_completed' : status === 'cancelled' ? 'batch_cancelled' : status === 'timed_out' ? 'batch_timed_out' : 'batch_failed';
 const inspectGit = async (path: string): Promise<{ head: string | null; status: string; diffStat: string }> => { const [head, status, diffStat] = await Promise.all([runGit(path, ['rev-parse', 'HEAD']), runGit(path, ['status', '--porcelain=v1']), runGit(path, ['diff', '--stat'])]); return { head: head.exitCode === 0 ? head.stdout.trim() : null, status: status.stdout, diffStat: diffStat.stdout }; };
 const followUpPrompt = (prompt: string, correctivePrompt: string | null): string => correctivePrompt ? `${prompt}\n\nFollow-up corrective instruction:\n${correctivePrompt}` : prompt;
+const correctionPrompt = (originalPrompt: string, evidence: { command: string; exitCode: number | null; output: string; outputTruncated: boolean }): string => {
+  const output = evidence.output.length > MAX_CORRECTION_EVIDENCE_CHARS ? `${evidence.output.slice(0, MAX_CORRECTION_EVIDENCE_CHARS)}\n[Output truncated by NightShift.]` : evidence.output;
+  return `The implementation from the previous turn is still present in the current worktree.
+
+Original task context:
+${originalPrompt}
+
+NightShift deterministic validation failed:
+
+Command:
+${evidence.command}
+
+Exit code:
+${evidence.exitCode ?? 'unknown'}
+
+Output:
+${output || '(no output captured)'}${evidence.outputTruncated ? '\n[Validation output was truncated.]' : ''}
+
+Inspect and correct the existing implementation so this validation failure is resolved. Preserve correct unrelated work and remain within the original task scope. Do not commit or push. Run only targeted checks useful for the correction; NightShift will rerun deterministic validation.`;
+};
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
 const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;
 const normalizeTimeout = (value: unknown, fallback: number): number => typeof value === 'number' && [30, 60, 90, 120].includes(value / 60_000) ? value : fallback;

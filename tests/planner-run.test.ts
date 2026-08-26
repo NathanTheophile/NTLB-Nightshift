@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -115,6 +115,83 @@ describe('Planner Run vertical slice', () => {
       expect(completed.finalGitState).toContain('marker.txt');
       expect(service.events(completed.id, 'raw_protocol').events.map((event) => event.eventType)).toContain('agent_protocol');
       expect(fixture.tasks.findById(task.id)?.status).toBe('completed');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('does not invoke a correction when initial deterministic validation passes', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, true);
+      const adapter = new CompletingAdapter(); const service = fixture.service(adapter, 10_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Already valid.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      await waitFor(() => service.list(fixture.workspace.id)[0]?.status === 'completed' ? true : undefined);
+      const run = service.list(fixture.workspace.id)[0]!; await waitForCandidateSettlement(service, run.id);
+      expect(adapter.starts).toBe(1); expect(service.validationCommands(run.id)).toHaveLength(1);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('corrects a failed validation in the same worktree and resumes a supported session', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new CorrectingAdapter(2, true); const service = fixture.service(adapter, 10_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Fix validation.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const completed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
+      expect(adapter.starts).toBe(2); expect(adapter.workingDirectories[0]).toBe(adapter.workingDirectories[1]); expect(adapter.externalSessionIds).toEqual([null, 'session-1']);
+      expect(service.validationCommands(completed.id).map((command) => command.status)).toEqual(['failed', 'passed']);
+      expect(service.events(completed.id, 'activity').events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['correction_started', 'correction_completed']));
+      await waitForCandidateSettlement(service, completed.id);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('retries two failed validations before a successful second correction', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new CorrectingAdapter(3); const service = fixture.service(adapter, 10_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Fix after two retries.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const completed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
+      expect(adapter.starts).toBe(3); expect(service.validationCommands(completed.id).map((command) => command.status)).toEqual(['failed', 'failed', 'passed']);
+      await waitForCandidateSettlement(service, completed.id);
+    } finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('fails after the correction budget is exhausted, retains evidence, and continues the queue', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new CorrectingAdapter(4); const service = fixture.service(adapter, 10_000); service.setConcurrencyLimit(1);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Will remain invalid.', requestedAgentId: null, requestedModelId: null, priority: 1 });
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Queue continues.', requestedAgentId: null, requestedModelId: null, priority: 2 }); service.schedule();
+      await waitFor(() => service.list(fixture.workspace.id).some((run) => run.status === 'failed') ? true : undefined, 8_000);
+      await waitFor(() => service.list(fixture.workspace.id).some((run) => run.status === 'completed') ? true : undefined, 8_000);
+      const failed = service.list(fixture.workspace.id).find((run) => run.status === 'failed')!;
+      expect(failed.failureReason).toContain('after 2 automatic correction attempts'); expect(failed.worktreePath).toBeTruthy(); expect(service.validationCommands(failed.id)).toHaveLength(3);
+      const completed = service.list(fixture.workspace.id).find((run) => run.status === 'completed')!; await waitForCandidateSettlement(service, completed.id);
+    } finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('times out or cancels during correction without launching another correction', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new CorrectionHangingAdapter(); const service = fixture.service(adapter, 1_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Time out correcting.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      await waitFor(() => service.list(fixture.workspace.id)[0]?.status === 'timed_out' ? true : undefined, 2_000);
+      expect(adapter.starts).toBe(2);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('cancels during correction without launching another correction', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new CorrectionHangingAdapter(); const service = fixture.service(adapter, 5_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Cancel correcting.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      await waitFor(() => adapter.starts === 2 ? true : undefined, 3_000);
+      const run = service.list(fixture.workspace.id)[0]!; await service.requestCancellation(run.id);
+      await waitFor(() => service.find(run.id).then((value) => value?.status === 'cancelled' ? value : undefined), 3_000);
+      expect(adapter.starts).toBe(2);
     } finally { await fixture.dispose(); }
   });
 
@@ -370,10 +447,42 @@ const setup = async () => {
   return { repository, workspace, tasks, runs, worktreeService, service, dispose: async () => { await waitFor(() => services.every((value) => value.list(workspace.id).every((run) => !isExecutingRun(run, tasks))) ? true : undefined, 2_000).catch(() => undefined); await pause(500); database.close(); await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } };
 };
 
+const installValidationScript = async (fixture: Awaited<ReturnType<typeof setup>>, initiallyFixed: boolean): Promise<void> => {
+  await mkdir(join(fixture.repository, 'node_modules'));
+  await writeFile(join(fixture.repository, 'package.json'), JSON.stringify({ scripts: { test: "node -e \"process.exit(require('node:fs').existsSync('fixed.txt') ? 0 : 1)\"" } }));
+  if (initiallyFixed) await writeFile(join(fixture.repository, 'fixed.txt'), 'fixed\n');
+  await exec('git', ['-C', fixture.repository, 'add', '.']); await exec('git', ['-C', fixture.repository, 'commit', '-m', 'validation fixture']);
+};
+const waitForCandidateSettlement = async (service: RunService, runId: string): Promise<void> => {
+  await waitFor(() => service.find(runId).then((run) => run?.candidatePublishState === 'failed' ? true : undefined), 5_000);
+};
+
 class CompletingAdapter implements AgentAdapter {
   public readonly id = 'claude-code'; public starts = 0; public readonly workingDirectories: string[] = []; public capabilities = (): AgentCapabilities => capabilities; public supportsWorkerModel = (): boolean => true; public detect = (): Promise<AgentDescriptor> => Promise.resolve({ id: this.id, displayName: 'Test', fccLauncher: 'test', installed: true, launchable: true, version: null, capabilities, lastValidatedAt: null });
   public async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; this.workingDirectories.push(spec.workingDirectory); const event = { sequence: 0, timestamp: new Date().toISOString(), raw: '{"type":"system"}', parsed: { type: 'system' }, type: 'system', externalSessionId: 'session-test', terminal: false, parseError: null }; spec.onProtocolEvent?.(event); await writeFile(join(spec.workingDirectory, 'marker.txt'), 'changed by planner\n'); return { handleId: randomUUID(), externalSessionId: 'session-test', events: [event], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'session-test', events: [event], terminalEvent: { ...event, terminal: true }, stderr: '' }) }; }
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('not implemented')); } public cancel(): Promise<void> { return Promise.resolve(); }
+}
+class CorrectingAdapter extends CompletingAdapter {
+  public readonly externalSessionIds: Array<string | null> = [];
+  public constructor(private readonly fixOnStart: number, private readonly resumable = false) { super(); }
+  public override capabilities = (): AgentCapabilities => ({ ...capabilities, resume: this.resumable });
+  public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.externalSessionIds.push(spec.externalSessionId ?? null);
+    if (this.starts + 1 >= this.fixOnStart) await writeFile(join(spec.workingDirectory, 'fixed.txt'), 'fixed\n');
+    this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
+    const sessionId = `session-${this.starts}`;
+    return { handleId: randomUUID(), externalSessionId: sessionId, events: [], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: sessionId, events: [], terminalEvent: null, stderr: '' }) };
+  }
+}
+class CorrectionHangingAdapter extends CompletingAdapter {
+  private resolve?: (result: AgentExecutionResult) => void;
+  public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
+    if (this.starts === 1) return Promise.resolve({ handleId: 'initial', externalSessionId: 'session-1', events: [], completion: Promise.resolve({ handleId: 'initial', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: 'session-1', events: [], terminalEvent: null, stderr: '' }) });
+    const completion = new Promise<AgentExecutionResult>((resolve) => { this.resolve = resolve; });
+    return Promise.resolve({ handleId: 'correction', externalSessionId: 'session-1', events: [], completion });
+  }
+  public override cancel(): Promise<void> { this.resolve?.(cancelledTestResult()); return Promise.resolve(); }
 }
 class FailingAdapter extends CompletingAdapter {
   public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; this.workingDirectories.push(spec.workingDirectory); return Promise.resolve({ handleId: randomUUID(), externalSessionId: null, events: [], completion: Promise.resolve({ handleId: 'failed', succeeded: false, failureReason: 'Expected failure.', exitCode: 1, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) }); }
