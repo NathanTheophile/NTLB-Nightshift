@@ -90,6 +90,12 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     if (request.limit !== 1 && request.limit !== 2 && request.limit !== 3 && request.limit !== 4) throw new Error('limit must be between 1 and 4.');
     return { limit: services.runs.setConcurrencyLimit(request.limit) as 1 | 2 | 3 | 4 };
   });
+  handle(IPC_CHANNELS.plannerGetRunTimeout, () => ({ timeoutMs: services.runs.timeoutMs() as 1_800_000 | 3_600_000 | 5_400_000 | 7_200_000 }));
+  handle(IPC_CHANNELS.plannerSetRunTimeout, (request) => {
+    assertRecord(request);
+    if (request.timeoutMs !== 30 * 60_000 && request.timeoutMs !== 60 * 60_000 && request.timeoutMs !== 90 * 60_000 && request.timeoutMs !== 120 * 60_000) throw new Error('timeoutMs must be 30, 60, 90, or 120 minutes.');
+    return { timeoutMs: services.runs.setTimeoutMs(request.timeoutMs) as 1_800_000 | 3_600_000 | 5_400_000 | 7_200_000 };
+  });
 
   handle(IPC_CHANNELS.runsList, (request) => {
     assertRecord(request);
@@ -232,7 +238,7 @@ function assertCreateTaskInput(value: unknown): asserts value is CreatePlannerTa
   assertNullableString(value.requestedModelId, 'requestedModelId');
   if (value.executionMode === undefined) value.executionMode = 'single_agent';
   if (value.batchSteps === undefined) value.batchSteps = [];
-  if (value.executionMode !== 'single_agent' && value.executionMode !== 'sequential_batch' && value.executionMode !== 'delegated_leader') {
+  if (value.executionMode !== 'single_agent' && value.executionMode !== 'sequential_batch') {
     throw new Error('Unsupported Planner execution mode.');
   }
   if (!Array.isArray(value.batchSteps) || value.batchSteps.length > 32 || !value.batchSteps.every((step) => typeof step === 'string')) {

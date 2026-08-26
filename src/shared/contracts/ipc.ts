@@ -37,6 +37,7 @@ export interface PlannerSelectionCatalog {
   defaultModelId: string;
 }
 export interface PlannerConcurrencySettings { limit: 1 | 2 | 3 | 4; }
+export interface PlannerRunTimeoutSettings { timeoutMs: 1_800_000 | 3_600_000 | 5_400_000 | 7_200_000; }
 
 export interface CreateWorkerInput { workspaceId: string; title: string; agentId: string; modelId: string; permissionProfile: WorkerPermissionProfile; isolationMode: IsolationMode; }
 export interface WorkerSelectionCatalog { agents: readonly AgentDescriptor[]; modelsByAgent: Readonly<Record<string, readonly ModelDescriptor[]>>; }
@@ -83,6 +84,8 @@ export const IPC_CHANNELS = {
   plannerSelectionCatalog: 'planner:selection-catalog',
   plannerGetConcurrency: 'planner:get-concurrency',
   plannerSetConcurrency: 'planner:set-concurrency',
+  plannerGetRunTimeout: 'planner:get-run-timeout',
+  plannerSetRunTimeout: 'planner:set-run-timeout',
   runsList: 'runs:list',
   runsNavigation: 'runs:navigation',
   runsEvents: 'runs:events',
@@ -124,6 +127,8 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
   [IPC_CHANNELS.plannerGetConcurrency]: { request: undefined; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.plannerSetConcurrency]: { request: PlannerConcurrencySettings; response: PlannerConcurrencySettings };
+  [IPC_CHANNELS.plannerGetRunTimeout]: { request: undefined; response: PlannerRunTimeoutSettings };
+  [IPC_CHANNELS.plannerSetRunTimeout]: { request: PlannerRunTimeoutSettings; response: PlannerRunTimeoutSettings };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
   [IPC_CHANNELS.runsNavigation]: { request: { workspaceId: string }; response: RunNavigationItem[] };
   [IPC_CHANNELS.runsEvents]: { request: ListRunEventsRequest; response: RunEventPage };
@@ -173,6 +178,8 @@ export interface NightShiftApi {
     selectionCatalog: () => Promise<PlannerSelectionCatalog>;
     getConcurrency: () => Promise<PlannerConcurrencySettings>;
     setConcurrency: (limit: 1 | 2 | 3 | 4) => Promise<PlannerConcurrencySettings>;
+    getRunTimeout: () => Promise<PlannerRunTimeoutSettings>;
+    setRunTimeout: (timeoutMs: PlannerRunTimeoutSettings['timeoutMs']) => Promise<PlannerRunTimeoutSettings>;
   };
   runs: {
     list: (workspaceId: string) => Promise<Run[]>;

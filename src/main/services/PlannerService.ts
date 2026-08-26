@@ -23,10 +23,10 @@ export class PlannerService implements PlannerServiceContract {
     const prompt = input.prompt.trim();
     const executionMode = input.executionMode ?? 'single_agent';
     const batchSteps = input.batchSteps ?? [];
-    if (executionMode !== 'single_agent' && executionMode !== 'sequential_batch' && executionMode !== 'delegated_leader') {
+    if (executionMode !== 'single_agent' && executionMode !== 'sequential_batch') {
       throw new Error('Unsupported Planner execution mode.');
     }
-    if ((executionMode === 'single_agent' || executionMode === 'delegated_leader') && !prompt) {
+    if (executionMode === 'single_agent' && !prompt) {
       throw new Error('A Planner task requires a prompt.');
     }
     if (executionMode === 'sequential_batch' && (!batchSteps.length || batchSteps.length > 32 || batchSteps.some((step) => !step.trim()))) {

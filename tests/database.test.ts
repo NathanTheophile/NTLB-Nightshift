@@ -14,6 +14,7 @@ import { WorkspaceService } from '../src/main/services/WorkspaceService';
 import { PlannerService } from '../src/main/services/PlannerService';
 import { migrations } from '../src/main/persistence/migrations';
 import { RunRepository } from '../src/main/persistence/repositories/RunRepository';
+import { RunService } from '../src/main/services/RunService';
 
 const temporaryDirectories: string[] = [];
 
@@ -30,16 +31,16 @@ describe('DatabaseService', () => {
     const databasePath = join(directory, 'nightshift.sqlite');
 
     const firstOpen = new DatabaseService(databasePath);
-    expect(firstOpen.schemaVersion()).toBe(10);
+    expect(firstOpen.schemaVersion()).toBe(11);
     firstOpen.close();
 
     const secondOpen = new DatabaseService(databasePath);
-    expect(secondOpen.schemaVersion()).toBe(10);
+    expect(secondOpen.schemaVersion()).toBe(11);
     expect(
       secondOpen
         .queryAll<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
         .map(({ name }) => name),
-    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models', 'planner_batch_steps', 'run_batch_steps', 'run_attempts']));
+    ).toEqual(expect.arrayContaining(['workspaces', 'tasks', 'runs', 'run_events', 'workers', 'chats', 'agents', 'models', 'planner_batch_steps', 'run_batch_steps']));
     secondOpen.close();
   });
 
@@ -66,7 +67,6 @@ describe('DatabaseService', () => {
 
   it('rejects unsupported and invalid Planner execution modes', () => {
     const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\nightshift-test', 'nightshift-test', true); const planner = new PlannerService(tasks, workspaces);
-    expect(planner.createTask({ workspaceId: workspace.id, prompt: 'Delegate.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] }).executionMode).toBe('delegated_leader');
     expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: [' '] })).toThrow('non-empty ordered steps');
     expect(() => planner.createTask({ workspaceId: workspace.id, prompt: '', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'sequential_batch', batchSteps: Array.from({ length: 33 }, () => 'Step') })).toThrow('between 1 and 32');
     database.close();
@@ -89,6 +89,17 @@ describe('DatabaseService', () => {
     expect(tasks.findById('task')?.executionMode).toBe('single_agent'); expect(runs?.execution_mode).toBe('single_agent'); migrated.close();
   });
 
+  it('normalizes legacy Delegated Leader modes during migration', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nightshift-delegated-legacy-')); temporaryDirectories.push(directory); const databasePath = join(directory, 'nightshift.sqlite'); const legacy = new DatabaseSync(databasePath);
+    legacy.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);');
+    migrations.filter((migration) => migration.version < 11).forEach((migration) => { legacy.exec(migration.sql); legacy.prepare('INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)').run(migration.version, migration.name, '2026-08-25T00:00:00.000Z'); });
+    legacy.prepare("INSERT INTO workspaces(id, root_path, display_name, is_git, created_at, last_opened_at) VALUES ('workspace', 'C:\\legacy', 'legacy', 1, '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z')").run();
+    legacy.prepare("INSERT INTO tasks(id, workspace_id, prompt, title, priority, status, visible_in_planner, execution_mode, created_at, updated_at) VALUES ('task', 'workspace', 'Legacy task', 'Legacy task', 1, 'completed', 1, 'delegated_leader', '2026-08-25T00:00:00.000Z', '2026-08-25T00:00:00.000Z')").run();
+    legacy.prepare("INSERT INTO runs(id, task_id, workspace_id, resolved_agent_id, resolved_model_id, execution_mode, status, created_at) VALUES ('run', 'task', 'workspace', 'claude-code', 'model', 'delegated_leader', 'completed', '2026-08-25T00:00:00.000Z')").run(); legacy.close();
+    const migrated = new DatabaseService(databasePath); const tasks = new PlannerTaskRepository(migrated); const run = new RunRepository(migrated).findRequired('run');
+    expect(tasks.findById('task')?.executionMode).toBe('single_agent'); expect(run.executionMode).toBe('single_agent'); migrated.close();
+  });
+
   it('persists candidate publication state and immutable follow-up provenance', () => {
     const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch('C:\\projects\\candidate', 'candidate', true);
     const task = tasks.create({ workspaceId: workspace.id, prompt: 'Implement the candidate.', requestedAgentId: null, requestedModelId: null, priority: 1 });
@@ -100,6 +111,11 @@ describe('DatabaseService', () => {
     expect(published).toMatchObject({ candidateBranchName: 'nightshift/run/source-candidate', candidateCommitSha: 'candidate-sha', candidateRemoteName: 'origin', candidatePublishState: 'published', candidateFailureReason: null });
     const followUp = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: source.resolvedAgentId, resolvedModelId: source.resolvedModelId, sourceRunId: source.id, followUpPrompt: 'Correct review issue.' });
     expect(followUp).toMatchObject({ sourceRunId: source.id, followUpPrompt: 'Correct review issue.', candidatePublishState: 'not_published' }); database.close();
+  });
+
+  it('defaults Run timeout to 90 minutes and persists supported values', () => {
+    const database = new DatabaseService(':memory:'); const settings = new SettingsRepository(database); const service = new RunService(new RunRepository(database), new PlannerTaskRepository(database), new WorkspaceRepository(database), {} as never, new Map(), { agentId: 'agent', modelId: 'model', timeoutMs: 90 * 60_000 }, undefined, settings);
+    expect(service.timeoutMs()).toBe(90 * 60_000); expect(service.setTimeoutMs(120 * 60_000)).toBe(120 * 60_000); expect(settings.get('planner.run_timeout_ms')).toBe(120 * 60_000); expect(() => service.setTimeoutMs(45 * 60_000)).toThrow('30, 60, 90, or 120 minutes'); database.close();
   });
 
   it('persists ordered open tabs without deleting remembered workspaces', () => {

@@ -4,7 +4,7 @@ import { candidateBranchForRunName, readableRunNameWithSuffix, readableRunSlug }
 
 describe('human-readable Run naming', () => {
   it('creates lowercase ASCII-safe slugs', () => {
-    expect(readableRunSlug('Improve Delegated Leader Run observability')).toBe('improve-delegated-leader-run-observability');
+    expect(readableRunSlug('Improve Planner Run observability')).toBe('improve-planner-run-observability');
     expect(readableRunSlug('Été / déjà-vu — UI!!!')).toBe('ete-deja-vu-ui');
   });
 

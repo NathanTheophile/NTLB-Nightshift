@@ -65,17 +65,6 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
-  it('blocks a Delegated Leader task when its runtime is not configured', async () => {
-    const fixture = await setup();
-    try {
-      const adapter = new CompletingAdapter(); adapter.capabilities = () => ({ ...capabilities, workerValidated: true }); const service = fixture.service(adapter, 1_000);
-      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Stale mode.', requestedAgentId: null, requestedModelId: null, priority: 1, executionMode: 'delegated_leader', batchSteps: [] }); service.schedule();
-      const run = await waitFor<Run | undefined>(() => service.list(fixture.workspace.id)[0]);
-      const blocked = await waitFor(() => service.find(run.id).then((item) => item?.status === 'blocked' ? item : undefined));
-      expect(adapter.starts).toBe(0); expect(blocked.failureReason).toContain('not configured');
-    } finally { await fixture.dispose(); }
-  });
-
   it('cancels the active batch step and does not start later steps', async () => {
     const fixture = await setup();
     try {

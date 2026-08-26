@@ -35,6 +35,8 @@ const api: NightShiftApi = {
     selectionCatalog: () => invoke(IPC_CHANNELS.plannerSelectionCatalog, undefined),
     getConcurrency: () => invoke(IPC_CHANNELS.plannerGetConcurrency, undefined),
     setConcurrency: (limit) => invoke(IPC_CHANNELS.plannerSetConcurrency, { limit }),
+    getRunTimeout: () => invoke(IPC_CHANNELS.plannerGetRunTimeout, undefined),
+    setRunTimeout: (timeoutMs) => invoke(IPC_CHANNELS.plannerSetRunTimeout, { timeoutMs }),
   },
   runs: {
     list: (workspaceId) => invoke(IPC_CHANNELS.runsList, { workspaceId }),

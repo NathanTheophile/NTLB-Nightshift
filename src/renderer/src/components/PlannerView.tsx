@@ -32,6 +32,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [concurrency, setConcurrency] = useState<1 | 2 | 3 | 4>(2);
+  const [timeoutMs, setTimeoutMs] = useState<1_800_000 | 3_600_000 | 5_400_000 | 7_200_000>(5_400_000);
 
   useEffect(() => {
     let active = true;
@@ -47,6 +48,9 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
     void window.nightShift.planner.getConcurrency().then((value) => {
       if (active) setConcurrency(value.limit);
     }).catch((error: unknown) => onError(messageFrom(error)));
+    void window.nightShift.planner.getRunTimeout().then((value) => {
+      if (active) setTimeoutMs(value.timeoutMs);
+    }).catch((error: unknown) => onError(messageFrom(error)));
     const interval = window.setInterval(refresh, 1_500);
     return () => {
       active = false;
@@ -56,7 +60,7 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
 
   const submitTask = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (saving || ((executionMode === 'single_agent' || executionMode === 'delegated_leader') && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))) {
+    if (saving || (executionMode === 'single_agent' && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))) {
       return;
     }
 
@@ -91,6 +95,10 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
   };
   const updateConcurrency = async (value: 1 | 2 | 3 | 4): Promise<void> => {
     try { setConcurrency((await window.nightShift.planner.setConcurrency(value)).limit); }
+    catch (error) { onError(messageFrom(error)); }
+  };
+  const updateTimeout = async (value: typeof timeoutMs): Promise<void> => {
+    try { setTimeoutMs((await window.nightShift.planner.setRunTimeout(value)).timeoutMs); }
     catch (error) { onError(messageFrom(error)); }
   };
 
@@ -167,13 +175,18 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             <select aria-label="Mode d’exécution" value={executionMode} onChange={(event) => setExecutionMode(event.target.value as PlannerExecutionMode)}>
               <option value="single_agent">Single Agent</option>
               <option value="sequential_batch">Sequential Batch</option>
-              <option value="delegated_leader">Delegated Leader</option>
             </select>
           </label>
           <label>
             <span>Runs concurrents</span>
             <select aria-label="Runs concurrents" value={concurrency} onChange={(event) => void updateConcurrency(Number(event.target.value) as 1 | 2 | 3 | 4)}>
               {[1, 2, 3, 4].map((value) => <option value={value} key={value}>{value}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Timeout Run</span>
+            <select aria-label="Timeout Run" value={timeoutMs} onChange={(event) => void updateTimeout(Number(event.target.value) as typeof timeoutMs)}>
+              {[30, 60, 90, 120].map((minutes) => <option value={minutes * 60_000} key={minutes}>{minutes} min</option>)}
             </select>
           </label>
         </div>
@@ -194,11 +207,11 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
             placeholder={executionMode === 'sequential_batch' ? 'Contexte partagé facultatif pour toutes les étapes…' : 'Ajouter une tâche automatisée…'}
             aria-label="Prompt de la tâche Planner"
           />
-          <button type="submit" disabled={saving || ((executionMode === 'single_agent' || executionMode === 'delegated_leader') && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))}>
+          <button type="submit" disabled={saving || (executionMode === 'single_agent' && !prompt.trim()) || (executionMode === 'sequential_batch' && batchSteps.some((step) => !step.trim()))}>
             {saving ? 'Enregistrement…' : 'Ajouter à la file'}
           </button>
         </div>
-        <p className="runtime-note">Jusqu’à {concurrency} Run{concurrency > 1 ? 's' : ''} Planner isolé{concurrency > 1 ? 's' : ''} s’exécutent simultanément.</p>
+        <p className="runtime-note">Jusqu’à {concurrency} Run{concurrency > 1 ? 's' : ''} Planner isolé{concurrency > 1 ? 's' : ''} s’exécutent simultanément, avec un délai global de {timeoutMs / 60_000} min par Run.</p>
       </form>
     </section>
   );
@@ -223,4 +236,4 @@ const availableModels = (catalog: PlannerSelectionCatalog | null, agentId: strin
   return catalog.modelsByAgent[agentId ?? catalog.defaultAgentId] ?? [];
 };
 
-const executionLabel = (mode: PlannerExecutionMode): string => mode === 'single_agent' ? 'Single Agent' : mode === 'sequential_batch' ? 'Sequential Batch' : 'Delegated Leader';
+const executionLabel = (mode: PlannerExecutionMode): string => mode === 'single_agent' ? 'Single Agent' : 'Sequential Batch';

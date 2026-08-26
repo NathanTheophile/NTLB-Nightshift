@@ -18,6 +18,8 @@ export interface RunService {
   batchSteps(runId: string): BatchStep[];
   concurrencyLimit(): number;
   setConcurrencyLimit(limit: number): number;
+  timeoutMs(): number;
+  setTimeoutMs(timeoutMs: number): number;
   schedule(): void;
   requestCancellation(runId: string): Promise<Run>;
   publishCandidate(runId: string): Promise<Run>;

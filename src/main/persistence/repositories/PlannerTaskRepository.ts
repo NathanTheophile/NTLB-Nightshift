@@ -12,7 +12,7 @@ interface PlannerTaskRow {
   prompt: string;
   requested_agent_id: string | null;
   requested_model_id: string | null;
-  execution_mode: PlannerExecutionMode;
+  execution_mode: string;
   priority: number;
   status: PlannerTaskStatus;
   visible_in_planner: number;
@@ -132,7 +132,7 @@ const mapPlannerTask = (row: PlannerTaskRow): PlannerTask => ({
   prompt: row.prompt,
   requestedAgentId: row.requested_agent_id,
   requestedModelId: row.requested_model_id,
-  executionMode: row.execution_mode ?? 'single_agent',
+  executionMode: row.execution_mode === 'sequential_batch' ? 'sequential_batch' : 'single_agent',
   priority: row.priority,
   status: row.status,
   visibleInPlanner: row.visible_in_planner === 1,

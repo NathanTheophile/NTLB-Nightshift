@@ -290,4 +290,12 @@ export const migrations: readonly Migration[] = [
       ALTER TABLE run_validation_commands ADD COLUMN attempt_id TEXT REFERENCES run_attempts(id) ON DELETE RESTRICT;
     `,
   },
+  {
+    version: 11,
+    name: 'normalize_delegated_leader_execution_modes',
+    sql: `
+      UPDATE tasks SET execution_mode = 'single_agent' WHERE execution_mode = 'delegated_leader';
+      UPDATE runs SET execution_mode = 'single_agent' WHERE execution_mode = 'delegated_leader';
+    `,
+  },
 ];

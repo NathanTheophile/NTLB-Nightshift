@@ -13,7 +13,6 @@ import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/ent
 import type { RunNavigationItem } from '@shared/contracts/ipc';
 import { basename, resolve } from 'node:path';
 import { resolveEffectiveDevBase } from './ReviewIntegrationService';
-import type { DelegatedRunOrchestrator } from './DelegatedRunOrchestrator';
 import { candidateBranchForRunName } from './RunNaming';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
@@ -26,9 +25,10 @@ export class RunService implements RunServiceContract {
   private readonly validation: ProjectValidationService;
   private readonly slots = new Map<string, Promise<void>>();
   private configuredConcurrency: number | undefined;
+  private configuredTimeoutMs: number | undefined;
   private scheduling = false;
   private scheduleRequested = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly delegated?: DelegatedRunOrchestrator) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -61,6 +61,14 @@ export class RunService implements RunServiceContract {
     this.configuredConcurrency = normalized;
     this.settings?.set('planner.concurrent_runs', normalized);
     this.schedule();
+    return normalized;
+  }
+  public timeoutMs(): number { return this.configuredTimeoutMs ?? normalizeTimeout(this.settings?.get<number>('planner.run_timeout_ms'), this.defaults.timeoutMs); }
+  public setTimeoutMs(timeoutMs: number): number {
+    const normalized = normalizeTimeout(timeoutMs, this.defaults.timeoutMs);
+    if (timeoutMs !== normalized) throw new Error('Run timeout must be 30, 60, 90, or 120 minutes.');
+    this.configuredTimeoutMs = normalized;
+    this.settings?.set('planner.run_timeout_ms', normalized);
     return normalized;
   }
   public schedule(): void {
@@ -136,13 +144,13 @@ export class RunService implements RunServiceContract {
     const task = this.tasks.findById(taskId); if (!task || (!existingRunId && task.status !== 'running')) return;
     const workspace = this.workspaces.findById(task.workspaceId); const requestedAgentId = task.requestedAgentId ?? this.defaults.agentId; const requestedModelId = task.requestedModelId ?? this.defaults.modelId;
     const run = existingRunId ? this.runs.findRequired(existingRunId) : this.runs.create({ taskId: task.id, workspaceId: task.workspaceId, resolvedAgentId: requestedAgentId, resolvedModelId: requestedModelId, executionMode: task.executionMode });
-    const agentId = run.resolvedAgentId; const modelId = run.resolvedModelId; const isFollowUp = Boolean(run.sourceRunId);
+    const agentId = run.resolvedAgentId; const modelId = run.resolvedModelId; const isFollowUp = Boolean(run.sourceRunId); const runTimeoutMs = this.timeoutMs();
     const batchSteps = run.executionMode === 'sequential_batch' ? this.runs.createBatchSteps(run.id, this.tasks.batchSteps(task.id)) : [];
     this.runs.appendEvent(run.id, 'preparing', { agentId, modelId, executionMode: run.executionMode });
     try {
       if (!workspace?.isGit) throw new Error('Write-capable Planner runs require a Git workspace.');
-      const adapter = this.adapters.get(agentId); if (!adapter || (run.executionMode === 'delegated_leader' ? !adapter.capabilities().workerValidated : !adapter.capabilities().plannerValidated)) throw new Error(`Planner agent ${agentId} is not validated.`);
-      if (run.executionMode !== 'delegated_leader' && adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
+      const adapter = this.adapters.get(agentId); if (!adapter || !adapter.capabilities().plannerValidated) throw new Error(`Planner agent ${agentId} is not validated.`);
+      if (adapter.supportsPlannerModel && !adapter.supportsPlannerModel(modelId)) throw new Error(`Planner model ${modelId} is not validated for ${agentId}.`);
       const head = run.sourceRunId ? this.followUpBase(run.sourceRunId) : await this.plannerBase(workspace.rootPath, workspace.id);
       if (head.exitCode !== 0) throw new Error('Could not determine Git base for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
@@ -151,14 +159,7 @@ export class RunService implements RunServiceContract {
       this.runs.setPreparation(run.id, worktree.baseSha, worktree.path); this.runs.appendEvent(run.id, 'worktree_created', worktree);
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
-      const deadline = Date.now() + this.defaults.timeoutMs;
-      if (run.executionMode === 'delegated_leader') {
-        if (!this.delegated) throw new Error('Delegated Leader runtime is not configured.');
-        const status = await this.delegated.execute({ run, task, worktreePath: worktree.path, adapter, deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', setActive: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), clearActive: () => this.active.delete(run.id) });
-        const finalGit = await inspectGit(worktree.path);
-        const autonomous = this.runs.findRequired(run.id); this.runs.setAutonomyPhase(run.id, 'terminal'); this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), failure_reason: status === 'blocked' ? autonomous.failureReason ?? 'Delegated Leader blocked autonomous continuation.' : status === 'timed_out' ? 'Run exceeded the hard timeout.' : status === 'cancelled' ? 'Cancelled by user.' : null, validation_status: autonomous.validationStatus ?? 'not_configured', final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
-        this.tasks.setStatus(task.id, taskStatus(status)); this.runs.appendEvent(run.id, 'terminal', { status }); return;
-      }
+      const deadline = Date.now() + runTimeoutMs;
       const result = run.executionMode === 'sequential_batch'
         ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, deadline)
         : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), deadline);
@@ -188,7 +189,7 @@ export class RunService implements RunServiceContract {
         const finalGit = await inspectGit(current.worktreePath);
         this.runs.setStatus(run.id, 'timed_out', { final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       }
-      if (!terminalStatuses.has(current.status)) { const timedOut = Date.now() >= (current.startedAt ? new Date(current.startedAt).getTime() + this.defaults.timeoutMs : Number.MAX_SAFE_INTEGER); this.runs.setStatus(run.id, timedOut ? 'timed_out' : 'blocked', { finished_at: new Date().toISOString(), failure_reason: timedOut ? 'Run exceeded the hard timeout.' : detail }); this.runs.appendEvent(run.id, timedOut ? 'timeout' : 'blocked', { detail }); }
+      if (!terminalStatuses.has(current.status)) { const timedOut = Date.now() >= (current.startedAt ? new Date(current.startedAt).getTime() + runTimeoutMs : Number.MAX_SAFE_INTEGER); this.runs.setStatus(run.id, timedOut ? 'timed_out' : 'blocked', { finished_at: new Date().toISOString(), failure_reason: timedOut ? 'Run exceeded the hard timeout.' : detail }); this.runs.appendEvent(run.id, timedOut ? 'timeout' : 'blocked', { detail }); }
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(this.runs.findRequired(run.id).status), { status: this.runs.findRequired(run.id).status, detail });
       if (!isFollowUp) this.tasks.setStatus(task.id, taskStatus(this.runs.findRequired(run.id).status));
     } finally { this.active.delete(run.id); }
@@ -330,7 +331,7 @@ export class RunService implements RunServiceContract {
     if (!run.sourceRunId) this.tasks.setStatus(taskId, 'cancelled');
     return true;
   }
-  private async waitWithTimeout(runId: string, completion: Promise<AgentExecutionResult>, timeoutMs = this.defaults.timeoutMs): Promise<AgentExecutionResult> {
+  private async waitWithTimeout(runId: string, completion: Promise<AgentExecutionResult>, timeoutMs: number): Promise<AgentExecutionResult> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try { return await Promise.race([completion, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new RunTimeoutError()), timeoutMs); })]); }
     catch (error) { if (!(error instanceof RunTimeoutError)) throw error; await this.timeoutRun(runId, completion); throw error; }
@@ -353,3 +354,4 @@ const inspectGit = async (path: string): Promise<{ head: string | null; status: 
 const followUpPrompt = (prompt: string, correctivePrompt: string | null): string => correctivePrompt ? `${prompt}\n\nFollow-up corrective instruction:\n${correctivePrompt}` : prompt;
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
 const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;
+const normalizeTimeout = (value: unknown, fallback: number): number => typeof value === 'number' && [30, 60, 90, 120].includes(value / 60_000) ? value : fallback;

@@ -16,7 +16,7 @@ export const SOURCE_DEPENDENCIES_UNAVAILABLE = 'Workspace dependencies are unava
 
 interface PackageJson { scripts?: Record<string, unknown>; }
 interface ValidationCommand { script: string | null; command: string; }
-export interface ValidationExecutionOptions { deadline: number; attemptId?: string; isCancellationRequested: () => boolean; onProcessStarted?: (cancel: () => Promise<void>) => void; onProcessFinished?: () => void; }
+export interface ValidationExecutionOptions { deadline: number; isCancellationRequested: () => boolean; onProcessStarted?: (cancel: () => Promise<void>) => void; onProcessFinished?: () => void; }
 
 export class ProjectValidationService {
   public constructor(private readonly runs: RunRepository, private readonly supervisor: ProcessSupervisor) {}
@@ -28,7 +28,7 @@ export class ProjectValidationService {
     for (const spec of commands) {
       if (options.isCancellationRequested()) return this.interrupt(runId, 'cancelled');
       if (Date.now() >= options.deadline) return this.interrupt(runId, 'timed_out');
-      const evidence = this.runs.startValidationCommand(runId, PROFILE_ID, spec.command, options.attemptId ?? null); this.runs.appendEvent(runId, 'validation_command_started', { profileId: PROFILE_ID, command: spec.command, attemptId: options.attemptId ?? null });
+      const evidence = this.runs.startValidationCommand(runId, PROFILE_ID, spec.command); this.runs.appendEvent(runId, 'validation_command_started', { profileId: PROFILE_ID, command: spec.command });
       const result = await this.executeCommand(runId, worktreePath, spec, options);
       if (result.interruption) {
         this.runs.finishValidationCommand(evidence.id, 'interrupted', result.exitCode, result.output, result.truncated);
