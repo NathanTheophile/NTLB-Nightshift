@@ -22,7 +22,7 @@ const adapterId = 'claude-code';
 const launcherCommand = 'fcc-claude';
 const nemotronModelId = 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b';
 const lunaModelId = 'openai/gpt-5.6-luna';
-const validatedPlannerModels = new Set([nemotronModelId]);
+const validatedRunModels = new Set([nemotronModelId, lunaModelId]);
 const validatedWorkerModels = new Set([nemotronModelId, lunaModelId]);
 
 export interface ClaudeCodeAdapterOptions {
@@ -73,7 +73,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   public supportsPlannerModel(modelId: string): boolean {
-    return validatedPlannerModels.has(modelId);
+    return validatedRunModels.has(modelId);
   }
 
   public supportsWorkerModel(modelId: string): boolean {
@@ -85,7 +85,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   public supportsModelForExecutionMode(executionMode: PlannerExecutionMode, modelId: string): boolean {
-    return executionMode === 'delegated_leader' ? validatedWorkerModels.has(modelId) : validatedPlannerModels.has(modelId);
+    void executionMode;
+    return validatedRunModels.has(modelId);
   }
 
   public async detect(): Promise<AgentDescriptor> {

@@ -28,16 +28,26 @@ describe('AgentRegistry', () => {
     expect(catalog.modelsByAgent['claude-code']?.map(({ id }) => id)).toEqual(['model']);
   });
 
-  it('derives delegated compatibility without requiring interactive Worker sessions', async () => {
+  it('derives execution compatibility without mode-specific model ownership', async () => {
     const codex = new CodexAdapter(noopSupervisor, healthyGateway, { discoverLauncher: () => Promise.resolve('fcc-codex') });
     const registry = new AgentRegistry([new ClaudeCodeAdapter(noopSupervisor, healthyGateway, { discoverLauncher: () => Promise.resolve('fcc-claude') }), codex]);
     await registry.refresh();
     const models = [model('nvidia_nim/nvidia/nemotron-3-super-120b-a12b'), model('openai/gpt-5.6-luna'), model('openai/gpt-5.6')];
 
-    expect(registry.catalogForExecutionMode('single_agent', models).modelsByAgent['claude-code']?.map(({ id }) => id))
+    const single = registry.catalogForExecutionMode('single_agent', models);
+    expect(single.agents.map(({ id }) => id)).toEqual(['claude-code', 'codex']);
+    expect(single.modelsByAgent['claude-code']?.map(({ id }) => id))
+      .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-5.6-luna']);
+    expect(single.modelsByAgent.codex?.map(({ id }) => id))
       .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
-    expect(registry.catalogForExecutionMode('sequential_batch', models).modelsByAgent['claude-code']?.map(({ id }) => id))
+
+    const sequential = registry.catalogForExecutionMode('sequential_batch', models);
+    expect(sequential.agents.map(({ id }) => id)).toEqual(['claude-code', 'codex']);
+    expect(sequential.modelsByAgent['claude-code']?.map(({ id }) => id))
+      .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-5.6-luna']);
+    expect(sequential.modelsByAgent.codex?.map(({ id }) => id))
       .toEqual(['nvidia_nim/nvidia/nemotron-3-super-120b-a12b']);
+
     const delegated = registry.catalogForExecutionMode('delegated_leader', models);
     expect(delegated.agents.map(({ id }) => id)).toEqual(['claude-code', 'codex']);
     expect(codex.capabilities().interactive).toBe(false);

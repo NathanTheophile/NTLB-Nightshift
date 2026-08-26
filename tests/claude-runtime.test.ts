@@ -137,14 +137,18 @@ describe('ClaudeCodeAdapter runtime protocol', () => {
     }
   });
 
-  it('accepts Luna as a validated delegated Worker and forwards its exact FCC model id', async () => {
+  it('accepts Luna as a validated Claude coding model independently of execution mode', async () => {
     const workingDirectory = await mkdtemp(join(tmpdir(), 'nightshift-claude-luna-'));
     try {
       const supervisor = new ScriptedSupervisor(['{"type":"result","subtype":"success","result":"done"}\n']);
       const adapter = new ClaudeCodeAdapter(supervisor, healthyGateway(), { discoverLauncher: () => Promise.resolve('C:\\tools\\fcc-claude.exe') });
 
-      expect(adapter.supportsPlannerModel('openai/gpt-5.6-luna')).toBe(false);
+      expect(adapter.supportsPlannerModel('openai/gpt-5.6-luna')).toBe(true);
       expect(adapter.supportsWorkerModel('openai/gpt-5.6-luna')).toBe(true);
+      expect(adapter.supportsModelForExecutionMode('single_agent', 'openai/gpt-5.6-luna')).toBe(true);
+      expect(adapter.supportsModelForExecutionMode('sequential_batch', 'openai/gpt-5.6-luna')).toBe(true);
+      expect(adapter.supportsModelForExecutionMode('delegated_leader', 'openai/gpt-5.6-luna')).toBe(true);
+      expect(adapter.supportsModelForExecutionMode('delegated_leader', 'openai/gpt-5.6')).toBe(false);
       await (await adapter.startRun({ runId: 'delegated-luna', workspaceId: 'workspace-unit', workingDirectory, modelId: 'openai/gpt-5.6-luna', prompt: 'Implement the requested change.' })).completion;
 
       expect(supervisor.startedSpec?.arguments).toEqual(expect.arrayContaining(['--model', 'openai/gpt-5.6-luna']));
