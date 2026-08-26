@@ -3,7 +3,7 @@ import type { ModelDescriptor, ValidationStatus } from '@shared/domain/entities'
 import type { FccGateway } from './contracts/FccGateway';
 
 export type LeaderDecision =
-  | { protocolVersion: 1; action: 'WORK'; instruction: string; summary: string }
+  | { protocolVersion: 1; action: 'WORK'; instruction: string; summary: string; workspaceMode?: 'current' | 'checkpoint' }
   | { protocolVersion: 1; action: 'DONE'; summary: string }
   | { protocolVersion: 1; action: 'BLOCKED'; summary: string; blocker: string };
 
@@ -17,8 +17,8 @@ export interface LeaderRequest {
 export interface LeaderClient { resolveLuna(): Promise<ModelDescriptor>; decide(modelId: string, request: LeaderRequest, signal: AbortSignal): Promise<LeaderDecision>; }
 
 const systemInstruction = `You are NightShift's Delegated Leader. You never edit code or run commands. Return exactly one JSON object and no markdown, commentary, or chain-of-thought.
-Schema: {"protocolVersion":1,"action":"WORK","instruction":"non-empty concrete worker instruction","summary":"concise operational summary"} OR {"protocolVersion":1,"action":"DONE","summary":"concise operational summary"} OR {"protocolVersion":1,"action":"BLOCKED","summary":"concise operational summary","blocker":"non-empty actionable blocker"}.
-WORK requires a non-empty instruction and is for exactly one bounded coding step that a fresh Worker can reasonably execute and validate. Do not restate the entire remaining mission. On initial planning, choose the smallest useful implementation step. After a passing step, return DONE only if the complete user objective is satisfied; otherwise return WORK containing exactly the next bounded step. After a failing step, use the supplied failure evidence to return one bounded corrective step or BLOCKED. NightShift owns deterministic full validation: do not instruct Workers to rerun the complete typecheck, lint, test, or build suite. Workers may run focused checks when useful. DONE is permitted only when deterministic validationStatus is "passed". BLOCKED is for a reason autonomous continuation is unsafe or impossible. Do not add keys.`;
+Schema: {"protocolVersion":1,"action":"WORK","instruction":"non-empty concrete worker instruction","summary":"concise operational summary","workspaceMode":"current"|"checkpoint"} OR {"protocolVersion":1,"action":"DONE","summary":"concise operational summary"} OR {"protocolVersion":1,"action":"BLOCKED","summary":"concise operational summary","blocker":"non-empty actionable blocker"}.
+WORK requires a non-empty instruction and is for exactly one bounded coding step that a fresh Worker can reasonably execute and validate. Do not restate the entire remaining mission. On initial planning, choose the smallest useful implementation step and workspaceMode "current". After a passing step, return DONE only if the complete user objective is satisfied; otherwise return WORK containing exactly the next bounded step with workspaceMode "current". After a failing step, use the supplied failure evidence to return one bounded corrective step or BLOCKED: use workspaceMode "current" when the failed implementation is useful and needs a bounded repair; use "checkpoint" only when the failed attempt should be discarded. Never infer workspaceMode from the instruction text. NightShift owns deterministic full validation: do not instruct Workers to rerun the complete typecheck, lint, test, or build suite. Workers may run focused checks when useful. DONE is permitted only when deterministic validationStatus is "passed". BLOCKED is for a reason autonomous continuation is unsafe or impossible. Do not add keys.`;
 
 export class DelegatedLeaderClient implements LeaderClient {
   public constructor(private readonly gateway: FccGateway) {}
@@ -44,7 +44,7 @@ export class DelegatedLeaderClient implements LeaderClient {
 export const parseLeaderDecision = (raw: string): LeaderDecision => {
   let value: unknown; try { value = JSON.parse(raw); } catch { throw new Error('Leader response is not valid JSON.'); }
   if (!record(value) || value.protocolVersion !== 1 || typeof value.action !== 'string' || typeof value.summary !== 'string' || !value.summary.trim()) throw new Error('Leader response does not match the decision schema.');
-  if (value.action === 'WORK' && typeof value.instruction === 'string' && value.instruction.trim() && Object.keys(value).every((key) => ['protocolVersion', 'action', 'instruction', 'summary'].includes(key))) return { protocolVersion: 1, action: 'WORK', instruction: value.instruction.trim(), summary: value.summary.trim() };
+  if (value.action === 'WORK' && typeof value.instruction === 'string' && value.instruction.trim() && (value.workspaceMode === 'current' || value.workspaceMode === 'checkpoint') && Object.keys(value).every((key) => ['protocolVersion', 'action', 'instruction', 'summary', 'workspaceMode'].includes(key))) return { protocolVersion: 1, action: 'WORK', instruction: value.instruction.trim(), summary: value.summary.trim(), workspaceMode: value.workspaceMode };
   if (value.action === 'DONE' && Object.keys(value).every((key) => ['protocolVersion', 'action', 'summary'].includes(key))) return { protocolVersion: 1, action: 'DONE', summary: value.summary.trim() };
   if (value.action === 'BLOCKED' && typeof value.blocker === 'string' && value.blocker.trim() && Object.keys(value).every((key) => ['protocolVersion', 'action', 'summary', 'blocker'].includes(key))) return { protocolVersion: 1, action: 'BLOCKED', summary: value.summary.trim(), blocker: value.blocker.trim() };
   throw new Error('Leader response does not match the decision schema.');

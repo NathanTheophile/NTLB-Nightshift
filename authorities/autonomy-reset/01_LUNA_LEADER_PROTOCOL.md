@@ -118,6 +118,7 @@ type LeaderDecision =
       action: 'WORK';
       instruction: string;
       summary: string;
+      workspaceMode: 'current' | 'checkpoint';
     }
   | {
       protocolVersion: 1;
@@ -139,6 +140,7 @@ type LeaderDecision =
 ### WORK
 Requires:
 - non-empty `instruction`;
+- explicit `workspaceMode`; use `current` for initial and post-passing work, and select `current` or `checkpoint` deliberately after a failed validation;
 - remaining attempt budget > 0.
 
 NightShift creates the next Worker attempt automatically.
