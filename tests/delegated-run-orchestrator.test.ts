@@ -48,7 +48,7 @@ describe('Delegated Leader autonomous correction', () => {
       const supervisor = new WindowsProcessSupervisor(); const delegated = new DelegatedRunOrchestrator(runs, new ProjectValidationService(runs, supervisor), new RunReviewService(runs, workspaces), leader); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[worker.id, worker]]), { agentId: worker.id, modelId: 'model', timeoutMs: 10_000 }, supervisor, undefined, delegated);
       tasks.create({ workspaceId: workspace.id, prompt: 'Fix implementation', requestedAgentId: worker.id, requestedModelId: 'model', priority: 1, executionMode: 'delegated_leader' }); service.schedule();
       const run = await waitFor(() => service.list(workspace.id)[0]); const completed = await waitFor(async () => { const current = await service.find(run.id); return current?.candidatePublishState === 'published' ? current : undefined; }, 10_000); if (completed.status !== 'completed') throw new Error(`${completed.status}: ${completed.failureReason} ${JSON.stringify(service.events(run.id).events)}`);
-      expect(tasks.listVisible(workspace.id)).toHaveLength(1); expect(runs.attempts(completed.id)).toHaveLength(2); expect(worker.directories).toEqual([completed.worktreePath, completed.worktreePath]); expect(worker.secondSawBroken).toBe(true); expect(runs.attempts(completed.id).map((attempt) => attempt.validationStatus)).toEqual(['failed', 'passed']); expect(leader.requests[1]!.evidence.validationStatus).toBe('failed'); expect(leader.requests.at(-1)!.budget.remainingAttempts).toBe(2); expect(completed.validationStatus).toBe('passed'); expect(completed.candidatePublishState).toBe('published'); expect(completed.candidateCommitSha).toMatch(/^[0-9a-f]{40}$/); expect((await exec('git', ['--git-dir', remote, 'rev-parse', `refs/heads/${completed.candidateBranchName}`])).stdout.trim()).toBe(completed.candidateCommitSha); expect(service.events(completed.id).events.filter((event) => event.eventType === 'candidate_committed')).toHaveLength(1); expect(service.events(completed.id).events.map((event) => event.eventType)).not.toContain('follow_up_created');
+      expect(tasks.listVisible(workspace.id)).toHaveLength(1); expect(runs.attempts(completed.id)).toHaveLength(2); expect(worker.directories).toEqual([completed.worktreePath, completed.worktreePath]); expect(worker.secondSawBroken).toBe(false); expect(runs.attempts(completed.id).map((attempt) => attempt.validationStatus)).toEqual(['failed', 'passed']); expect(leader.requests[1]!.evidence.validationStatus).toBe('failed'); expect(leader.requests.at(-1)!.budget.remainingAttempts).toBe(10); expect(completed.validationStatus).toBe('passed'); expect(completed.candidatePublishState).toBe('published'); expect(completed.candidateCommitSha).toMatch(/^[0-9a-f]{40}$/); expect((await exec('git', ['--git-dir', remote, 'rev-parse', `refs/heads/${completed.candidateBranchName}`])).stdout.trim()).toBe(completed.candidateCommitSha); expect(service.events(completed.id).events.filter((event) => event.eventType === 'candidate_committed')).toHaveLength(1); expect(service.events(completed.id).events.map((event) => event.eventType)).not.toContain('follow_up_created');
       db.close();
     } finally { await rm(root, { recursive: true, force: true, maxRetries: 3 }); }
   }, 15_000);
@@ -103,9 +103,31 @@ describe('Delegated Leader autonomous correction', () => {
     finally { await fixture.dispose(); }
   }, 15_000);
 
+  it('checkpoints accepted steps and restores them before a corrective fresh Worker', async () => {
+    const worker = new CheckpointWorker(['accepted', 'rejected', 'fixed']);
+    const fixture = await delegatedFixture(worker, new QueuedLeader([{ protocolVersion: 1, action: 'WORK', instruction: 'first bounded step', summary: 'start' }, { protocolVersion: 1, action: 'WORK', instruction: 'second bounded step', summary: 'continue' }, { protocolVersion: 1, action: 'WORK', instruction: 'correct only the rejected step', summary: 'repair' }, { protocolVersion: 1, action: 'DONE', summary: 'done' }]), { validationScript: "node -e \"const value=require('fs').readFileSync('implementation.txt','utf8');process.exit(value==='rejected'?1:0)\"" });
+    try {
+      const run = await fixture.start(); const terminal = await fixture.terminal(run.id);
+      expect(terminal.status).toBe('completed'); expect(worker.directories).toEqual([terminal.worktreePath, terminal.worktreePath, terminal.worktreePath]); expect(worker.retrySawAccepted).toBe(true); expect(worker.retrySawRejected).toBe(false); expect(worker.retrySawJunk).toBe(false);
+      const events = fixture.service.events(run.id).events; expect(events.filter((event) => event.eventType === 'delegated_checkpoint_created')).toHaveLength(2); expect(events.filter((event) => event.eventType === 'delegated_checkpoint_restored')).toHaveLength(1);
+    } finally { await fixture.dispose(); }
+  }, 15_000);
+
   it('blocks after the bounded attempt budget without launching an extra Worker', async () => {
-    const fixture = await delegatedFixture(new FixedWorker(), new QueuedLeader(Array.from({ length: 5 }, (_, index) => ({ protocolVersion: 1 as const, action: 'WORK' as const, instruction: `attempt ${index}`, summary: 'continue' }))));
-    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toContain('attempt_budget_exhausted'); expect(fixture.runs.attempts(run.id)).toHaveLength(4); expect(fixture.worker.directories).toHaveLength(4); expect(terminal.worktreePath).toBeTruthy(); }
+    const fixture = await delegatedFixture(new FixedWorker(), new QueuedLeader(Array.from({ length: 13 }, (_, index) => ({ protocolVersion: 1 as const, action: 'WORK' as const, instruction: `attempt ${index}`, summary: 'continue' }))));
+    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toContain('attempt_budget_exhausted'); expect(fixture.runs.attempts(run.id)).toHaveLength(12); expect(fixture.worker.directories).toHaveLength(12); expect(terminal.worktreePath).toBeTruthy(); }
+    finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('blocks after three consecutive failed retries from one checkpoint', async () => {
+    const fixture = await delegatedFixture(new AlwaysBrokenWorker(), new QueuedLeader(Array.from({ length: 4 }, (_, index) => ({ protocolVersion: 1 as const, action: 'WORK' as const, instruction: `repair ${index}`, summary: 'retry' }))));
+    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toContain('checkpoint_retry_budget_exhausted'); expect(fixture.runs.attempts(run.id)).toHaveLength(3); expect(fixture.worker.directories).toHaveLength(3); expect(fixture.service.events(run.id).events.filter((event) => event.eventType === 'delegated_checkpoint_restored')).toHaveLength(2); }
+    finally { await fixture.dispose(); }
+  }, 15_000);
+
+  it('resets the consecutive failed retry budget after a passing checkpoint', async () => {
+    const fixture = await delegatedFixture(new SequencedWorker(['broken', 'fixed', 'broken', 'broken', 'broken']), new QueuedLeader(Array.from({ length: 6 }, (_, index) => ({ protocolVersion: 1 as const, action: 'WORK' as const, instruction: `step ${index}`, summary: 'continue' }))));
+    try { const run = await fixture.start(); const terminal = await fixture.terminal(run.id); expect(terminal.status).toBe('blocked'); expect(terminal.failureReason).toContain('checkpoint_retry_budget_exhausted'); expect(fixture.runs.attempts(run.id)).toHaveLength(5); expect(fixture.service.events(run.id).events.filter((event) => event.eventType === 'delegated_checkpoint_created')).toHaveLength(2); }
     finally { await fixture.dispose(); }
   }, 15_000);
 
@@ -181,6 +203,23 @@ class CorrectionWorker implements AgentAdapter {
   public startWorker(): Promise<AgentExecutionHandle> { return Promise.reject(new Error('Delegated attempts must use startRun.')); } public cancel(): Promise<void> { return Promise.resolve(); }
 }
 class FixedWorker extends CorrectionWorker { public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.directories.push(spec.workingDirectory); this.modelIds.push(spec.modelId); await writeFile(join(spec.workingDirectory, 'implementation.txt'), 'fixed'); const result: AgentExecutionResult = { handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }; return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve(result) }; } }
+class CheckpointWorker extends FixedWorker {
+  public retrySawAccepted = false; public retrySawRejected = false; public retrySawJunk = false;
+  public constructor(private readonly steps: string[]) { super(); }
+  public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.directories.push(spec.workingDirectory); const step = this.steps.shift()!;
+    if (this.directories.length === 3) { this.retrySawAccepted = (await readFile(join(spec.workingDirectory, 'accepted.txt'), 'utf8')) === 'accepted'; this.retrySawRejected = (await readFile(join(spec.workingDirectory, 'implementation.txt'), 'utf8')) === 'rejected'; this.retrySawJunk = await readFile(join(spec.workingDirectory, 'rejected-junk.txt'), 'utf8').then(() => true, () => false); }
+    if (step === 'accepted') await writeFile(join(spec.workingDirectory, 'accepted.txt'), 'accepted');
+    if (step === 'rejected') {
+      await writeFile(join(spec.workingDirectory, 'rejected-junk.txt'), 'junk');
+      await exec('git', ['-C', spec.workingDirectory, 'add', 'rejected-junk.txt']);
+    }
+    await writeFile(join(spec.workingDirectory, 'implementation.txt'), step);
+    return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve({ handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) };
+  }
+}
+class AlwaysBrokenWorker extends FixedWorker { public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.directories.push(spec.workingDirectory); await writeFile(join(spec.workingDirectory, 'implementation.txt'), 'broken'); return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve({ handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) }; } }
+class SequencedWorker extends AlwaysBrokenWorker { public constructor(private readonly values: string[]) { super(); } public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.directories.push(spec.workingDirectory); await writeFile(join(spec.workingDirectory, 'implementation.txt'), this.values.shift()!); return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve({ handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) }; } }
 class CodexDelegatedWorker extends FixedWorker {
   public override readonly id = 'codex'; public startWorkerCalls = 0;
   public override supportsModelForExecutionMode = (_mode: string, modelId: string): boolean => modelId === nemotronModelId;

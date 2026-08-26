@@ -4,9 +4,11 @@ import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { ProjectValidationService } from './ProjectValidationService';
 import type { RunReviewService } from './RunReviewService';
 import type { LeaderClient, LeaderDecision, LeaderRequest } from './DelegatedLeaderClient';
+import { DelegatedWorktreeCheckpoint } from './DelegatedWorktreeCheckpoint';
 import { supportsExecutionSelection } from './PlannerExecutionCompatibility';
 
-const MAX_ATTEMPTS = 4;
+const MAX_ATTEMPTS = 12;
+const MAX_CONSECUTIVE_FAILURES = 3;
 const cap = (value: string, bytes: number): { value: string; truncated: boolean } => Buffer.byteLength(value) <= bytes ? { value, truncated: false } : { value: Buffer.from(value).subarray(0, bytes).toString('utf8'), truncated: true };
 
 export class DelegatedRunOrchestrator {
@@ -16,6 +18,9 @@ export class DelegatedRunOrchestrator {
     const { run, adapter } = spec;
     if (!supportsExecutionSelection(adapter, 'delegated_leader', run.resolvedModelId)) throw new Error(`Delegated Worker ${run.resolvedAgentId}/${run.resolvedModelId} is not validated.`);
     const luna = await this.leader.resolveLuna(); if (spec.isCancellationRequested()) return 'cancelled'; if (Date.now() >= spec.deadline) return 'timed_out'; this.runs.setDelegatedMetadata(run.id, luna.id, MAX_ATTEMPTS, 'planning'); this.runs.appendEvent(run.id, 'leader_resolution', { modelId: luna.id });
+    let checkpoint = await DelegatedWorktreeCheckpoint.capture(spec.worktreePath);
+    this.runs.appendEvent(run.id, 'delegated_checkpoint_created', { attemptIndex: 0, checkpointId: checkpoint.treeId, initial: true });
+    let consecutiveFailures = 0;
     let decision = await this.decide(spec, luna.id, 'initial', 0, null, 'not_configured');
     for (let index = 0; index < MAX_ATTEMPTS; index += 1) {
       if (spec.isCancellationRequested()) return 'cancelled'; if (Date.now() >= spec.deadline) return 'timed_out';
@@ -34,6 +39,16 @@ export class DelegatedRunOrchestrator {
       if (decision.action === 'DONE' && validation === 'passed') { this.runs.appendEvent(run.id, 'autonomous_completed', { summary: decision.summary }); return 'completed'; }
       if (decision.action === 'DONE') decision = await this.decide(spec, luna.id, 'post_attempt', index, result, validation, 'DONE is forbidden because validation did not pass. Return WORK or BLOCKED.');
       if (decision.action === 'BLOCKED') return this.block(run.id, decision.blocker, decision.summary);
+      if (validation === 'passed') {
+        checkpoint = await DelegatedWorktreeCheckpoint.capture(spec.worktreePath);
+        consecutiveFailures = 0;
+        this.runs.appendEvent(run.id, 'delegated_checkpoint_created', { attemptIndex: index, checkpointId: checkpoint.treeId, initial: false });
+      } else {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return this.block(run.id, 'checkpoint_retry_budget_exhausted', 'Delegated Leader exhausted the consecutive failed retry budget for the accepted checkpoint.');
+        await checkpoint.restore(spec.worktreePath);
+        this.runs.appendEvent(run.id, 'delegated_checkpoint_restored', { attemptIndex: index, checkpointId: checkpoint.treeId, consecutiveFailures });
+      }
     }
     return this.block(run.id, 'attempt_budget_exhausted', 'Delegated Leader attempt budget was exhausted.');
   }
