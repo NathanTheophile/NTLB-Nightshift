@@ -131,6 +131,97 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('recovers one failed initial Single Agent execution in the same worktree before validation', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, true);
+      const adapter = new InitialRecoveryAdapter(['failed', 'completed']); const service = fixture.service(adapter, 10_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Recover implementation.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const completed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
+      expect(adapter.starts).toBe(2); expect(adapter.workingDirectories[0]).toBe(adapter.workingDirectories[1]); expect(service.validationCommands(completed.id)).toHaveLength(1);
+      expect(service.events(completed.id, 'activity').events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['agent_execution_failed', 'agent_recovery_started', 'agent_recovery_completed']));
+    } finally { await fixture.dispose(); }
+  });
+
+  it('runs the existing validation correction loop after a successful initial-execution recovery', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new InitialRecoveryAdapter(['failed', 'completed', 'completed'], false, 3); const service = fixture.service(adapter, 10_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Recover then fix validation.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const completed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
+      expect(adapter.starts).toBe(3); expect(service.validationCommands(completed.id).map((command) => command.status)).toEqual(['failed', 'passed']);
+      expect(service.events(completed.id, 'activity').events.map((event) => event.eventType)).toContain('correction_started');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('fails after one unsuccessful recovery, preserves bounded evidence, and skips validation', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, true);
+      const adapter = new InitialRecoveryAdapter(['diagnostic_failure', 'diagnostic_failure']); const service = fixture.service(adapter, 10_000);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Recovery fails.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const failed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'failed' ? run : undefined), 8_000);
+      const events = fixture.runs.listEvents(failed.id); const recoveryFailed = events.find((event) => event.eventType === 'agent_recovery_failed')!;
+      const payload = recoveryFailed.payload as { stderr: string; terminalEvent: { raw: string; result: string } };
+      expect(adapter.starts).toBe(2); expect(service.validationCommands(failed.id)).toHaveLength(0); expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['agent_execution_failed', 'agent_recovery_started', 'agent_recovery_failed']));
+      expect(Buffer.byteLength(payload.stderr)).toBeLessThanOrEqual(4 * 1024); expect(Buffer.byteLength(payload.terminalEvent.raw)).toBeLessThanOrEqual(4 * 1024); expect(Buffer.byteLength(payload.terminalEvent.result)).toBeLessThanOrEqual(4 * 1024);
+      expect(failed.failureReason).toContain('Automatic recovery after initial agent failure also failed');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('resumes a supported session and starts fresh for an adapter without resume support', async () => {
+    const resumableFixture = await setup(); const freshFixture = await setup();
+    try {
+      const resumable = new InitialRecoveryAdapter(['failed', 'completed'], true); const resumedService = resumableFixture.service(resumable, 10_000);
+      resumableFixture.tasks.create({ workspaceId: resumableFixture.workspace.id, prompt: 'Resume.', requestedAgentId: null, requestedModelId: null, priority: 1 }); resumedService.schedule();
+      await waitFor(() => resumedService.list(resumableFixture.workspace.id)[0]?.status === 'completed' ? true : undefined, 8_000);
+      expect(resumable.externalSessionIds).toEqual([null, 'session-1']);
+      const fresh = new InitialRecoveryAdapter(['failed', 'completed'], false); const freshService = freshFixture.service(fresh, 10_000);
+      freshFixture.tasks.create({ workspaceId: freshFixture.workspace.id, prompt: 'Fresh.', requestedAgentId: null, requestedModelId: null, priority: 1 }); freshService.schedule();
+      await waitFor(() => freshService.list(freshFixture.workspace.id)[0]?.status === 'completed' ? true : undefined, 8_000);
+      expect(fresh.externalSessionIds).toEqual([null, null]);
+    } finally { await resumableFixture.dispose(); await freshFixture.dispose(); }
+  });
+
+  it('uses the effective follow-up prompt when recovering a follow-up Run', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, true);
+      const adapter = new InitialRecoveryAdapter(['failed', 'completed']); const service = fixture.service(adapter, 10_000);
+      const source = await publishedSource(fixture); const followUp = await service.createFollowUp(source.id, 'Apply the follow-up repair.');
+      const completed = await waitFor(() => service.find(followUp.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
+      expect(completed.sourceRunId).toBe(source.id); expect(adapter.prompts[1]).toContain('Follow-up corrective instruction:\nApply the follow-up repair.');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('releases the scheduler slot after a failed recovery', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new InitialRecoveryAdapter(['failed', 'failed', 'completed']); const service = fixture.service(adapter, 10_000); service.setConcurrencyLimit(1);
+      const failedTask = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Fails recovery.', requestedAgentId: null, requestedModelId: null, priority: 1 });
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Runs next.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      await waitFor(() => service.list(fixture.workspace.id).find((run) => run.taskId === failedTask.id)?.status === 'failed' ? true : undefined, 8_000);
+      await waitFor(() => service.list(fixture.workspace.id).some((run) => run.status === 'completed') ? true : undefined, 8_000);
+      expect(adapter.starts).toBe(3);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('times out or cancels the active recovery without validation', async () => {
+    const timeoutFixture = await setup(); const cancellationFixture = await setup();
+    try {
+      const timeoutAdapter = new InitialRecoveryAdapter(['failed', 'hanging']); const timeoutService = timeoutFixture.service(timeoutAdapter, 40);
+      timeoutFixture.tasks.create({ workspaceId: timeoutFixture.workspace.id, prompt: 'Timeout recovery.', requestedAgentId: null, requestedModelId: null, priority: 1 }); timeoutService.schedule();
+      const timedOut = await waitFor(() => timeoutService.list(timeoutFixture.workspace.id)[0]?.status === 'timed_out' ? true : undefined, 2_000);
+      expect(timedOut).toBe(true); expect(timeoutAdapter.cancelled).toBe(1); expect(timeoutService.validationCommands(timeoutService.list(timeoutFixture.workspace.id)[0]!.id)).toHaveLength(0);
+      const cancellationAdapter = new InitialRecoveryAdapter(['failed', 'hanging']); const cancellationService = cancellationFixture.service(cancellationAdapter, 5_000);
+      cancellationFixture.tasks.create({ workspaceId: cancellationFixture.workspace.id, prompt: 'Cancel recovery.', requestedAgentId: null, requestedModelId: null, priority: 1 }); cancellationService.schedule();
+      await waitFor(() => cancellationAdapter.starts === 2 ? true : undefined); const run = cancellationService.list(cancellationFixture.workspace.id)[0]!; await cancellationService.requestCancellation(run.id);
+      await waitFor(() => cancellationService.find(run.id).then((value) => value?.status === 'cancelled' ? value : undefined));
+      expect(cancellationAdapter.cancelled).toBe(1); expect(cancellationService.validationCommands(run.id)).toHaveLength(0);
+    } finally { await timeoutFixture.dispose(); await cancellationFixture.dispose(); }
+  });
+
   it('corrects a failed validation in the same worktree and resumes a supported session', async () => {
     const fixture = await setup();
     try {
@@ -541,6 +632,26 @@ class CorrectionHangingAdapter extends CompletingAdapter {
 }
 class FailingAdapter extends CompletingAdapter {
   public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; this.workingDirectories.push(spec.workingDirectory); return Promise.resolve({ handleId: randomUUID(), externalSessionId: null, events: [], completion: Promise.resolve({ handleId: 'failed', succeeded: false, failureReason: 'Expected failure.', exitCode: 1, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) }); }
+}
+class InitialRecoveryAdapter extends CompletingAdapter {
+  public readonly externalSessionIds: Array<string | null> = []; public readonly prompts: string[] = []; public cancelled = 0; private resolve?: (result: AgentExecutionResult) => void;
+  public constructor(private readonly outcomes: Array<'completed' | 'failed' | 'diagnostic_failure' | 'hanging'>, private readonly resumable = false, private readonly fixOnStart?: number) { super(); }
+  public override capabilities = (): AgentCapabilities => ({ ...capabilities, resume: this.resumable });
+  public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.starts += 1; this.workingDirectories.push(spec.workingDirectory); this.externalSessionIds.push(spec.externalSessionId ?? null); this.prompts.push(spec.prompt);
+    if (this.starts === this.fixOnStart) await writeFile(join(spec.workingDirectory, 'fixed.txt'), 'fixed\n');
+    const externalSessionId = `session-${this.starts}`; const outcome = this.outcomes[this.starts - 1] ?? 'completed';
+    if (outcome === 'hanging') {
+      const completion = new Promise<AgentExecutionResult>((resolve) => { this.resolve = resolve; });
+      return { handleId: externalSessionId, externalSessionId, events: [], completion };
+    }
+    const diagnostic = outcome === 'diagnostic_failure'; const terminalEvent = diagnostic ? { sequence: 1, timestamp: new Date().toISOString(), raw: 'terminal-raw-'.repeat(1_000), parsed: { output: 'terminal-result-'.repeat(1_000) }, type: 'result', externalSessionId, terminal: true, parseError: null } : null;
+    const result: AgentExecutionResult = outcome === 'completed'
+      ? { handleId: externalSessionId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId, events: [], terminalEvent, stderr: '' }
+      : { handleId: externalSessionId, succeeded: false, failureReason: 'Expected initial execution failure.', exitCode: 1, signal: null, externalSessionId, events: terminalEvent ? [terminalEvent] : [], terminalEvent, stderr: diagnostic ? 'stderr-'.repeat(1_000) : '' };
+    return { handleId: externalSessionId, externalSessionId, events: terminalEvent ? [terminalEvent] : [], completion: Promise.resolve(result) };
+  }
+  public override cancel(): Promise<void> { this.cancelled += 1; this.resolve?.(cancelledTestResult()); return Promise.resolve(); }
 }
 class TimeoutThenCompleteAdapter extends CompletingAdapter {
   public cancelled = 0; public launches = 0; private resolve?: (value: AgentExecutionResult) => void;

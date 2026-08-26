@@ -19,6 +19,7 @@ import { candidateBranchForRunName } from './RunNaming';
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 const CANDIDATE_GIT_TIMEOUT_MS = 3 * 60_000;
 const MAX_AUTOMATIC_CORRECTIONS = 2;
+const MAX_INITIAL_AGENT_RECOVERIES = 1;
 const MAX_CORRECTION_EVIDENCE_CHARS = 12_000;
 const MAX_CORRECTION_DIAGNOSTIC_BYTES = 4 * 1024;
 const candidateGitOptions = (timeoutMs: number) => ({ timeoutMs, environment: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } });
@@ -210,9 +211,11 @@ export class RunService implements RunServiceContract {
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
       const deadline = Date.now() + runTimeoutMs;
+      const effectivePrompt = followUpPrompt(task.prompt, run.followUpPrompt);
       let result = run.executionMode === 'sequential_batch'
-        ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), batchSteps, deadline)
-        : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, followUpPrompt(task.prompt, run.followUpPrompt), deadline);
+        ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, batchSteps, deadline)
+        : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, deadline);
+      if (run.executionMode === 'single_agent' && !result.succeeded) result = await this.recoverInitialAgentFailure(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, result, deadline);
       const current = this.runs.findRequired(run.id); const cancelled = current.status === 'cancel_requested';
       let status: RunStatus = current.status === 'timed_out' ? 'timed_out' : cancelled ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
       if (status === 'completed') {
@@ -220,7 +223,7 @@ export class RunService implements RunServiceContract {
         const afterValidation = this.runs.findRequired(run.id);
         if (afterValidation.status === 'cancel_requested') status = 'cancelled';
         else if (validationStatus === 'failed' && run.executionMode === 'single_agent') {
-          result = await this.correctValidationFailures(run.id, workspace.id, worktree.path, modelId, adapter, task.prompt, result, deadline);
+          result = await this.correctValidationFailures(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, result, deadline);
           const correctedRun = this.runs.findRequired(run.id);
           status = correctedRun.status === 'timed_out' ? 'timed_out' : correctedRun.status === 'cancel_requested' ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
         } else if (validationStatus === 'failed') status = 'failed';
@@ -344,6 +347,25 @@ export class RunService implements RunServiceContract {
     if (this.runs.findRequired(runId).status === 'cancel_requested') await adapter.cancel(handle.handleId);
     return this.waitWithTimeout(runId, handle.completion, Math.max(0, deadline - Date.now()));
   }
+  private async recoverInitialAgentFailure(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, originalPrompt: string, initialResult: AgentExecutionResult, deadline: number): Promise<AgentExecutionResult> {
+    this.runs.appendEvent(runId, 'agent_execution_failed', executionFailureEvidence(adapter.id, initialResult));
+    const run = this.runs.findRequired(runId);
+    if (run.status === 'cancel_requested' || run.status === 'timed_out') return initialResult;
+    if (Date.now() >= deadline) { await this.timeoutRun(runId, Promise.resolve()); return initialResult; }
+    const attempt = MAX_INITIAL_AGENT_RECOVERIES;
+    const priorExternalSessionId = initialResult.externalSessionId;
+    const resumed = Boolean(priorExternalSessionId && adapter.capabilities().resume);
+    this.runs.appendEvent(runId, 'agent_recovery_started', { attempt, resumed, priorExternalSessionId });
+    const result = await this.executeSingle(runId, workspaceId, workingDirectory, modelId, adapter, initialRecoveryPrompt(originalPrompt, initialResult), deadline, resumed ? priorExternalSessionId : null);
+    const current = this.runs.findRequired(runId);
+    if (current.status === 'cancel_requested' || current.status === 'timed_out') return result;
+    if (result.succeeded) {
+      this.runs.appendEvent(runId, 'agent_recovery_completed', { attempt, resumed, externalSessionId: result.externalSessionId ?? priorExternalSessionId });
+      return { ...result, externalSessionId: result.externalSessionId ?? priorExternalSessionId };
+    }
+    this.runs.appendEvent(runId, 'agent_recovery_failed', { attempt, resumed, priorExternalSessionId, ...executionFailureEvidence(adapter.id, result, priorExternalSessionId) });
+    return { ...result, failureReason: `Automatic recovery after initial agent failure also failed: ${result.failureReason ?? 'Agent execution failed.'}. See agent_recovery_failed activity evidence for details.` };
+  }
   private async correctValidationFailures(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, originalPrompt: string, initialResult: AgentExecutionResult, deadline: number): Promise<AgentExecutionResult> {
     let result = initialResult;
     let externalSessionId = initialResult.externalSessionId;
@@ -461,17 +483,18 @@ const boundedDiagnostic = (value: string): { value: string; truncated: boolean }
   const bytes = Buffer.byteLength(value);
   return { value: bytes > MAX_CORRECTION_DIAGNOSTIC_BYTES ? Buffer.from(value).subarray(0, MAX_CORRECTION_DIAGNOSTIC_BYTES).toString('utf8') : value, truncated: bytes > MAX_CORRECTION_DIAGNOSTIC_BYTES };
 };
-const correctionFailureEvidence = (attempt: number, resumed: boolean, priorExternalSessionId: string | null, adapterId: string, result: AgentExecutionResult) => {
+const executionFailureEvidence = (adapterId: string, result: AgentExecutionResult, priorExternalSessionId: string | null = null) => {
   const stderr = boundedDiagnostic(result.stderr);
   const terminalRaw = result.terminalEvent ? boundedDiagnostic(result.terminalEvent.raw) : null;
   const terminalResult = result.terminalEvent ? boundedDiagnostic(safeJson(result.terminalEvent.parsed)) : null;
   return {
-    attempt, resumed, priorExternalSessionId, externalSessionId: result.externalSessionId ?? priorExternalSessionId, adapterId,
+    externalSessionId: result.externalSessionId ?? priorExternalSessionId, adapterId,
     exitCode: result.exitCode, signal: result.signal, failureReason: result.failureReason,
     stderr: stderr.value, stderrTruncated: stderr.truncated,
     terminalEvent: result.terminalEvent ? { type: result.terminalEvent.type, externalSessionId: result.terminalEvent.externalSessionId, raw: terminalRaw!.value, rawTruncated: terminalRaw!.truncated, result: terminalResult!.value, resultTruncated: terminalResult!.truncated } : null,
   };
 };
+const correctionFailureEvidence = (attempt: number, resumed: boolean, priorExternalSessionId: string | null, adapterId: string, result: AgentExecutionResult) => ({ attempt, resumed, priorExternalSessionId, ...executionFailureEvidence(adapterId, result, priorExternalSessionId) });
 const safeJson = (value: unknown): string => { try { return JSON.stringify(value) ?? 'null'; } catch { return '[Unserializable terminal result]'; } };
 const followUpPrompt = (prompt: string, correctivePrompt: string | null): string => correctivePrompt ? `${prompt}\n\nFollow-up corrective instruction:\n${correctivePrompt}` : prompt;
 const correctionPrompt = (originalPrompt: string, evidence: { command: string; exitCode: number | null; output: string; outputTruncated: boolean }): string => {
@@ -493,6 +516,34 @@ Output:
 ${output || '(no output captured)'}${evidence.outputTruncated ? '\n[Validation output was truncated.]' : ''}
 
 Inspect and correct the existing implementation so this validation failure is resolved. Preserve correct unrelated work and remain within the original task scope. Do not commit or push. Run only targeted checks useful for the correction; NightShift will rerun deterministic validation.`;
+};
+const initialRecoveryPrompt = (originalPrompt: string, result: AgentExecutionResult): string => {
+  const evidence = [result.stderr, result.terminalEvent?.raw ?? '', result.terminalEvent ? safeJson(result.terminalEvent.parsed) : ''].filter(Boolean).join('\n\n');
+  const boundedEvidence = evidence.length > MAX_CORRECTION_EVIDENCE_CHARS ? `${evidence.slice(0, MAX_CORRECTION_EVIDENCE_CHARS)}\n[Evidence truncated by NightShift.]` : evidence;
+  return `The previous implementation attempt exited unsuccessfully.
+
+The existing implementation remains in the current worktree.
+
+Original task:
+${originalPrompt}
+
+Previous execution failure:
+
+Exit code:
+${result.exitCode ?? 'unknown'}
+
+Signal:
+${result.signal ?? 'none'}
+
+Reason:
+${result.failureReason ?? 'No reason was provided.'}
+
+Relevant terminal/stderr evidence:
+${boundedEvidence || '(no evidence captured)'}
+
+Inspect the existing implementation and finish or repair it so it is ready for NightShift deterministic validation.
+
+Preserve correct existing work. Remain strictly within the original task scope. Do not reset or discard the worktree. Do not commit or push. Run only targeted checks useful while repairing the implementation. NightShift will perform final deterministic validation.`;
 };
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
 const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;
