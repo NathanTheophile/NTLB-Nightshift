@@ -210,7 +210,10 @@ class CheckpointWorker extends FixedWorker {
     this.directories.push(spec.workingDirectory); const step = this.steps.shift()!;
     if (this.directories.length === 3) { this.retrySawAccepted = (await readFile(join(spec.workingDirectory, 'accepted.txt'), 'utf8')) === 'accepted'; this.retrySawRejected = (await readFile(join(spec.workingDirectory, 'implementation.txt'), 'utf8')) === 'rejected'; this.retrySawJunk = await readFile(join(spec.workingDirectory, 'rejected-junk.txt'), 'utf8').then(() => true, () => false); }
     if (step === 'accepted') await writeFile(join(spec.workingDirectory, 'accepted.txt'), 'accepted');
-    if (step === 'rejected') await writeFile(join(spec.workingDirectory, 'rejected-junk.txt'), 'junk');
+    if (step === 'rejected') {
+      await writeFile(join(spec.workingDirectory, 'rejected-junk.txt'), 'junk');
+      await exec('git', ['-C', spec.workingDirectory, 'add', 'rejected-junk.txt']);
+    }
     await writeFile(join(spec.workingDirectory, 'implementation.txt'), step);
     return { handleId: spec.runId, externalSessionId: null, events: [], completion: Promise.resolve({ handleId: spec.runId, succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) };
   }

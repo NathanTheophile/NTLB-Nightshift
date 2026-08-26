@@ -12,10 +12,10 @@ export class DelegatedWorktreeCheckpoint {
   }
 
   public async restore(worktreePath: string): Promise<void> {
-    const cleaned = await runGit(worktreePath, ['clean', '-fd']);
-    if (cleaned.exitCode !== 0) throw new Error(gitFailure('Could not clear rejected delegated changes.', cleaned));
     const indexed = await runGit(worktreePath, ['read-tree', '--reset', this.treeId]);
     if (indexed.exitCode !== 0) throw new Error(gitFailure('Could not restore delegated checkpoint index.', indexed));
+    const cleaned = await runGit(worktreePath, ['clean', '-fd']);
+    if (cleaned.exitCode !== 0) throw new Error(gitFailure('Could not clear rejected delegated changes.', cleaned));
     const restored = await runGit(worktreePath, ['checkout-index', '--all', '--force']);
     if (restored.exitCode !== 0) throw new Error(gitFailure('Could not restore delegated checkpoint files.', restored));
   }
