@@ -3,6 +3,7 @@ import { lstat, mkdir, symlink, unlink } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 
 import type { WorktreeHandle, WorktreeService, WorktreeSpec } from './contracts/WorktreeService';
+import { candidateBranchForRunName, readableRunNameWithSuffix, readableRunSlug } from './RunNaming';
 
 export interface GitCommandResult { stdout: string; stderr: string; exitCode: number; }
 export type GitCommand = (repositoryRoot: string, argumentsList: readonly string[]) => Promise<GitCommandResult>;
@@ -18,13 +19,27 @@ export class GitWorktreeService implements WorktreeService {
     }
     const baseResult = await this.git(repositoryRoot, ['rev-parse', '--verify', `${spec.baseSha}^{commit}`]);
     if (baseResult.exitCode !== 0) throw new Error(`Git base ${spec.baseSha} is not available.`);
-    const branchName = `nightshift/run-${spec.runId}`;
-    const path = join(this.storageRoot, basename(repositoryRoot), spec.runId);
-    await mkdir(this.storageRoot, { recursive: true });
+    const storage = join(this.storageRoot, basename(repositoryRoot));
+    await mkdir(storage, { recursive: true });
+    const baseName = readableRunSlug(spec.title ?? spec.runId);
+    const runName = await this.allocateRunName(repositoryRoot, storage, baseName);
+    const branchName = candidateBranchForRunName(runName);
+    const path = join(storage, runName);
     const result = await this.git(repositoryRoot, ['worktree', 'add', '--detach', path, baseResult.stdout.trim()]);
     if (result.exitCode !== 0) throw new Error(`Could not create isolated worktree: ${result.stderr.trim() || result.stdout.trim()}`);
     await linkSourceDependencies(repositoryRoot, path);
     return { path, baseSha: baseResult.stdout.trim(), branchName };
+  }
+
+  private async allocateRunName(repositoryRoot: string, storage: string, baseName: string): Promise<string> {
+    for (let ordinal = 1; ordinal <= 9_999; ordinal += 1) {
+      const runName = readableRunNameWithSuffix(baseName, ordinal);
+      if (await pathExists(join(storage, runName))) continue;
+      const branch = await this.git(repositoryRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${candidateBranchForRunName(runName)}`]);
+      if (branch.exitCode === 1) return runName;
+      if (branch.exitCode !== 0) throw new Error(`Could not inspect candidate branch availability for ${runName}.`);
+    }
+    throw new Error(`Could not allocate a readable Run name for ${baseName}.`);
   }
 
   public async inspect(path: string): Promise<WorktreeHandle | undefined> {

@@ -11,9 +11,10 @@ import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceR
 import type { SettingsRepository } from '../persistence/repositories/SettingsRepository';
 import type { BatchStep, Run, RunEventKind, RunStatus } from '@shared/domain/entities';
 import type { RunNavigationItem } from '@shared/contracts/ipc';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { resolveEffectiveDevBase } from './ReviewIntegrationService';
 import type { DelegatedRunOrchestrator } from './DelegatedRunOrchestrator';
+import { candidateBranchForRunName } from './RunNaming';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
 
@@ -146,7 +147,7 @@ export class RunService implements RunServiceContract {
       if (head.exitCode !== 0) throw new Error('Could not determine Git base for Planner run.');
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       await assertNodeValidationDependencies(workspace.rootPath);
-      const worktree = await this.worktrees.createForRun({ runId: run.id, repositoryRoot: workspace.rootPath, baseSha: head.stdout.trim() });
+      const worktree = await this.worktrees.createForRun({ runId: run.id, title: task.title, repositoryRoot: workspace.rootPath, baseSha: head.stdout.trim() });
       this.runs.setPreparation(run.id, worktree.baseSha, worktree.path); this.runs.appendEvent(run.id, 'worktree_created', worktree);
       if (await this.finalizeIfCancellationRequested(run.id, task.id, batchSteps)) return;
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
@@ -167,6 +168,7 @@ export class RunService implements RunServiceContract {
         const validationStatus = await this.validation.validate(run.id, worktree.path, { deadline, isCancellationRequested: () => this.runs.findRequired(run.id).status === 'cancel_requested', onProcessStarted: (cancel) => this.active.set(run.id, { cancel, timedOut: false }), onProcessFinished: () => this.active.delete(run.id) });
         const afterValidation = this.runs.findRequired(run.id);
         if (afterValidation.status === 'cancel_requested') status = 'cancelled';
+        else if (validationStatus === 'failed') status = 'failed';
         else if (validationStatus === 'interrupted' && Date.now() >= deadline) { status = 'timed_out'; this.runs.appendEvent(run.id, 'timeout', { phase: 'validation' }); }
       }
       const finalGit = await inspectGit(worktree.path);
@@ -209,7 +211,7 @@ export class RunService implements RunServiceContract {
         runGit(workspace.rootPath, ['rev-parse', '--git-common-dir']),
       ]);
       if (worktreeRoot.exitCode !== 0 || worktreeGitDir.exitCode !== 0 || workspaceGitDir.exitCode !== 0 || resolve(worktreePath) !== resolve(worktreeRoot.stdout.trim()) || resolve(worktreePath, worktreeGitDir.stdout.trim()) !== resolve(workspace.rootPath, workspaceGitDir.stdout.trim())) throw new Error('Recorded Run worktree does not belong to its Workspace repository.');
-      const task = this.tasks.findById(run.taskId); const branchName = candidateBranchName(run.id, task?.title ?? 'candidate');
+      const branchName = candidateBranchForRunName(basename(worktreePath));
       if (!run.candidateCommitSha) {
         const branch = await runGit(worktreePath, ['rev-parse', '--verify', `refs/heads/${branchName}`]);
         const currentBranch = await runGit(worktreePath, ['branch', '--show-current']);
@@ -349,9 +351,5 @@ const cancelledResult = (): AgentExecutionResult => ({ handleId: 'cancelled-befo
 const batchTerminalEvent = (status: RunStatus): string => status === 'completed' ? 'batch_completed' : status === 'cancelled' ? 'batch_cancelled' : status === 'timed_out' ? 'batch_timed_out' : 'batch_failed';
 const inspectGit = async (path: string): Promise<{ head: string | null; status: string; diffStat: string }> => { const [head, status, diffStat] = await Promise.all([runGit(path, ['rev-parse', 'HEAD']), runGit(path, ['status', '--porcelain=v1']), runGit(path, ['diff', '--stat'])]); return { head: head.exitCode === 0 ? head.stdout.trim() : null, status: status.stdout, diffStat: diffStat.stdout }; };
 const followUpPrompt = (prompt: string, correctivePrompt: string | null): string => correctivePrompt ? `${prompt}\n\nFollow-up corrective instruction:\n${correctivePrompt}` : prompt;
-const candidateBranchName = (runId: string, title: string): string => {
-  const slug = title.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'candidate';
-  return `nightshift/run/${runId}-${slug}`;
-};
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
 const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;

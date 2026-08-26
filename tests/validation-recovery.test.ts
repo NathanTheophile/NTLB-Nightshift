@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
 
@@ -12,6 +14,8 @@ import { ProjectValidationService } from '../src/main/services/ProjectValidation
 import { RunService } from '../src/main/services/RunService';
 import { WindowsProcessSupervisor } from '../src/main/services/WindowsProcessSupervisor';
 
+const exec = promisify(execFile);
+
 describe('project-default validation', () => {
   it('records deterministic command evidence and passes only existing scripts', async () => {
     const fixture = await setup();
@@ -19,6 +23,18 @@ describe('project-default validation', () => {
       await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"', lint: 'node -e "process.exit(0)"' } }));
       const status = await new ProjectValidationService(fixture.runs, new WindowsProcessSupervisor()).validate(fixture.run.id, fixture.root, validationOptions());
       expect(status).toBe('passed'); expect(fixture.runs.validationCommands(fixture.run.id).map((item) => [item.profileId, item.command, item.status, item.exitCode])).toEqual([['node-package-scripts-v1', 'npm run lint', 'passed', 0], ['node-package-scripts-v1', 'npm run test', 'passed', 0]]);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('uses only git diff --check for lightweight file-only changes', async () => {
+    const fixture = await setup();
+    try {
+      await exec('git', ['init', fixture.root]); await exec('git', ['-C', fixture.root, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', fixture.root, 'config', 'user.name', 'NightShift Test']);
+      await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node -e "process.exit(0)"', lint: 'node -e "process.exit(0)"', test: 'node -e "process.exit(0)"', build: 'node -e "process.exit(0)"' } }));
+      await exec('git', ['-C', fixture.root, 'add', 'package.json']); await exec('git', ['-C', fixture.root, 'commit', '-m', 'base']);
+      await writeFile(join(fixture.root, 'SINGLE_AGENT_SMOKE.txt'), 'NightShift single-agent smoke test.\n');
+      const status = await new ProjectValidationService(fixture.runs, new WindowsProcessSupervisor()).validate(fixture.run.id, fixture.root, validationOptions());
+      expect(status).toBe('passed'); expect(fixture.runs.validationCommands(fixture.run.id).map((item) => [item.command, item.status, item.exitCode])).toEqual([['git diff --check', 'passed', 0]]);
     } finally { await fixture.dispose(); }
   });
 

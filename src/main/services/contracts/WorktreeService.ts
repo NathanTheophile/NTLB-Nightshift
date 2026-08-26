@@ -1,5 +1,6 @@
 export interface WorktreeSpec {
   runId: string;
+  title?: string;
   repositoryRoot: string;
   baseSha: string;
 }

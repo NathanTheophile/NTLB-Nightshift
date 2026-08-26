@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,7 @@ describe('candidate publishing and follow-up runs', () => {
       const source = await fixture.completedRun(true);
       const [published, concurrent] = await Promise.all([fixture.service.publishCandidate(source.id), fixture.service.publishCandidate(source.id)]);
       expect(published.candidatePublishState).toBe('published');
-      expect(published.candidateBranchName).toMatch(new RegExp(`^nightshift/run/${source.id}-`));
+      expect(published.candidateBranchName).toBe(`nightshift/run/${basename(source.worktreePath ?? '')}`);
       expect(published.candidateCommitSha).toMatch(/^[0-9a-f]{40}$/);
       expect(concurrent.candidateCommitSha).toBe(published.candidateCommitSha);
       const remote = await exec('git', ['--git-dir', fixture.remote, 'rev-parse', `refs/heads/${published.candidateBranchName}`]);
@@ -40,7 +40,7 @@ describe('candidate publishing and follow-up runs', () => {
   it('refuses an incompatible pre-existing remote candidate branch', async () => {
     const fixture = await setup();
     try {
-      const source = await fixture.completedRun(true); const branch = `nightshift/run/${source.id}-change-files`;
+      const source = await fixture.completedRun(true); const branch = `nightshift/run/${basename(source.worktreePath ?? '')}`;
       await exec('git', ['-C', fixture.repository, 'push', 'origin', `HEAD:refs/heads/${branch}`]);
       await expect(fixture.service.publishCandidate(source.id)).rejects.toThrow('incompatible commit');
       expect((await fixture.service.find(source.id))?.candidatePublishState).toBe('failed');
@@ -50,12 +50,12 @@ describe('candidate publishing and follow-up runs', () => {
   it('recovers candidate materialization after a local branch or commit is left behind', async () => {
     const fixture = await setup();
     try {
-      const afterBranch = await fixture.completedRun(true); const branch = `nightshift/run/${afterBranch.id}-change-files`;
+      const afterBranch = await fixture.completedRun(true); const branch = `nightshift/run/${basename(afterBranch.worktreePath ?? '')}`;
       await exec('git', ['-C', (await fixture.service.find(afterBranch.id))?.worktreePath ?? '', 'switch', '-c', branch]);
       const recoveredBranch = await fixture.service.publishCandidate(afterBranch.id);
       expect(recoveredBranch.candidatePublishState).toBe('published');
 
-      const afterCommit = await fixture.completedRun(true); const committedBranch = `nightshift/run/${afterCommit.id}-change-files`; const committedWorktree = (await fixture.service.find(afterCommit.id))?.worktreePath ?? '';
+      const afterCommit = await fixture.completedRun(true); const committedWorktree = (await fixture.service.find(afterCommit.id))?.worktreePath ?? ''; const committedBranch = `nightshift/run/${basename(committedWorktree)}`;
       await exec('git', ['-C', committedWorktree, 'switch', '-c', committedBranch]); await exec('git', ['-C', committedWorktree, 'add', '-A']); await exec('git', ['-C', committedWorktree, 'commit', '-m', `NightShift candidate: ${afterCommit.id}`]);
       const recoveredCommit = await fixture.service.publishCandidate(afterCommit.id);
       expect(recoveredCommit.candidatePublishState).toBe('published'); expect(recoveredCommit.candidateBranchName).toBe(committedBranch);
@@ -91,7 +91,7 @@ const setup = async () => {
   await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']); await writeFile(join(repository, 'base.txt'), 'base\n'); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); await exec('git', ['init', '--bare', remote]); await exec('git', ['-C', repository, 'remote', 'add', 'origin', remote]);
   const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repo', true); const adapter = new FollowUpAdapter(); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'model', timeoutMs: 2_000 });
   const completedRun = async (changes: boolean, executionMode: 'single_agent' | 'sequential_batch' = 'single_agent') => {
-    const task = tasks.create({ workspaceId: workspace.id, prompt: 'Change files.', requestedAgentId: adapter.id, requestedModelId: 'model', priority: 1, executionMode, batchSteps: executionMode === 'sequential_batch' ? ['First step', 'Second step'] : [] }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: adapter.id, resolvedModelId: 'model', executionMode }); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim(); const worktree = await new GitWorktreeService(join(root, 'worktrees')).createForRun({ runId: run.id, repositoryRoot: repository, baseSha: base }); runs.setPreparation(run.id, base, worktree.path);
+    const task = tasks.create({ workspaceId: workspace.id, prompt: 'Change files.', requestedAgentId: adapter.id, requestedModelId: 'model', priority: 1, executionMode, batchSteps: executionMode === 'sequential_batch' ? ['First step', 'Second step'] : [] }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: adapter.id, resolvedModelId: 'model', executionMode }); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim(); const worktree = await new GitWorktreeService(join(root, 'worktrees')).createForRun({ runId: run.id, title: task.title, repositoryRoot: repository, baseSha: base }); runs.setPreparation(run.id, base, worktree.path);
     if (changes) { await writeFile(join(worktree.path, 'base.txt'), 'tracked change\n'); await writeFile(join(worktree.path, 'untracked.txt'), 'untracked\n'); }
     tasks.setStatus(task.id, 'completed'); return runs.setStatus(run.id, 'completed');
   };
