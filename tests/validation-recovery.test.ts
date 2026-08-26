@@ -90,6 +90,6 @@ describe('restart recovery', () => {
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-validation-')); const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(root, 'test', true); const task = tasks.create({ workspaceId: workspace.id, prompt: 'test', requestedAgentId: null, requestedModelId: null, priority: 1 }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: 'agent', resolvedModelId: 'model' }); const service = new RunService(runs, tasks, workspaces, {} as never, new Map(), { agentId: 'agent', modelId: 'model', timeoutMs: 1 });
-  return { root, runs, tasks, workspace, task, run, service, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
+  return { root, runs, tasks, workspace, task, run, service, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
 };
 const validationOptions = () => ({ deadline: Date.now() + 30_000, isCancellationRequested: () => false });

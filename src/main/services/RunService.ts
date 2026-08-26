@@ -20,6 +20,7 @@ const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', '
 const CANDIDATE_GIT_TIMEOUT_MS = 3 * 60_000;
 const MAX_AUTOMATIC_CORRECTIONS = 2;
 const MAX_CORRECTION_EVIDENCE_CHARS = 12_000;
+const MAX_CORRECTION_DIAGNOSTIC_BYTES = 4 * 1024;
 const candidateGitOptions = (timeoutMs: number) => ({ timeoutMs, environment: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } });
 
 export interface PlannerRunDefaults { agentId: string; modelId: string; timeoutMs: number; }
@@ -77,6 +78,8 @@ export class RunService implements RunServiceContract {
     return normalized;
   }
   public queuePaused(): boolean { return this.settings?.get<boolean>('planner.queue_paused') === true; }
+  /** Narrow lifecycle signal for callers that must dispose resources after Run work settles. */
+  public isIdle(): boolean { return !this.scheduling && !this.scheduleRequested && this.slots.size === 0 && this.active.size === 0 && this.publishing.size === 0; }
   public setQueuePaused(paused: boolean): boolean {
     this.settings?.set('planner.queue_paused', paused);
     if (!paused) this.schedule();
@@ -349,14 +352,16 @@ export class RunService implements RunServiceContract {
       if (run.status === 'cancel_requested') return cancelledResult();
       if (Date.now() >= deadline) { await this.timeoutRun(runId, Promise.resolve()); throw new RunTimeoutError(); }
       const evidence = this.latestFailedValidationEvidence(runId);
-      this.runs.appendEvent(runId, 'correction_started', { attempt, resumed: Boolean(externalSessionId && adapter.capabilities().resume) });
-      result = await this.executeSingle(runId, workspaceId, workingDirectory, modelId, adapter, correctionPrompt(originalPrompt, evidence), deadline, adapter.capabilities().resume ? externalSessionId : null);
+      const priorExternalSessionId = externalSessionId;
+      const resumed = Boolean(priorExternalSessionId && adapter.capabilities().resume);
+      this.runs.appendEvent(runId, 'correction_started', { attempt, resumed });
+      result = await this.executeSingle(runId, workspaceId, workingDirectory, modelId, adapter, correctionPrompt(originalPrompt, evidence), deadline, resumed ? priorExternalSessionId : null);
       externalSessionId = result.externalSessionId ?? externalSessionId;
       const current = this.runs.findRequired(runId);
       if (current.status === 'cancel_requested') return cancelledResult();
       if (!result.succeeded) {
-        this.runs.appendEvent(runId, 'correction_failed', { attempt, reason: result.failureReason });
-        return result;
+        this.runs.appendEvent(runId, 'correction_failed', correctionFailureEvidence(attempt, resumed, priorExternalSessionId, adapter.id, result));
+        return { ...result, failureReason: `Automatic correction attempt ${attempt} failed: ${result.failureReason ?? 'Agent execution failed.'} See correction_failed activity evidence for stderr/terminal details.` };
       }
       this.runs.appendEvent(runId, 'correction_completed', { attempt, externalSessionId });
       const validationStatus = await this.validation.validate(runId, workingDirectory, { deadline, isCancellationRequested: () => this.runs.findRequired(runId).status === 'cancel_requested', onProcessStarted: (cancel) => this.active.set(runId, { cancel, timedOut: false }), onProcessFinished: () => this.active.delete(runId) });
@@ -452,6 +457,22 @@ class RunTimeoutError extends Error {}
 const cancelledResult = (): AgentExecutionResult => ({ handleId: 'cancelled-before-step', succeeded: false, failureReason: 'Cancelled by user.', exitCode: null, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' });
 const batchTerminalEvent = (status: RunStatus): string => status === 'completed' ? 'batch_completed' : status === 'cancelled' ? 'batch_cancelled' : status === 'timed_out' ? 'batch_timed_out' : 'batch_failed';
 const inspectGit = async (path: string): Promise<{ head: string | null; status: string; diffStat: string }> => { const [head, status, diffStat] = await Promise.all([runGit(path, ['rev-parse', 'HEAD']), runGit(path, ['status', '--porcelain=v1']), runGit(path, ['diff', '--stat'])]); return { head: head.exitCode === 0 ? head.stdout.trim() : null, status: status.stdout, diffStat: diffStat.stdout }; };
+const boundedDiagnostic = (value: string): { value: string; truncated: boolean } => {
+  const bytes = Buffer.byteLength(value);
+  return { value: bytes > MAX_CORRECTION_DIAGNOSTIC_BYTES ? Buffer.from(value).subarray(0, MAX_CORRECTION_DIAGNOSTIC_BYTES).toString('utf8') : value, truncated: bytes > MAX_CORRECTION_DIAGNOSTIC_BYTES };
+};
+const correctionFailureEvidence = (attempt: number, resumed: boolean, priorExternalSessionId: string | null, adapterId: string, result: AgentExecutionResult) => {
+  const stderr = boundedDiagnostic(result.stderr);
+  const terminalRaw = result.terminalEvent ? boundedDiagnostic(result.terminalEvent.raw) : null;
+  const terminalResult = result.terminalEvent ? boundedDiagnostic(safeJson(result.terminalEvent.parsed)) : null;
+  return {
+    attempt, resumed, priorExternalSessionId, externalSessionId: result.externalSessionId ?? priorExternalSessionId, adapterId,
+    exitCode: result.exitCode, signal: result.signal, failureReason: result.failureReason,
+    stderr: stderr.value, stderrTruncated: stderr.truncated,
+    terminalEvent: result.terminalEvent ? { type: result.terminalEvent.type, externalSessionId: result.terminalEvent.externalSessionId, raw: terminalRaw!.value, rawTruncated: terminalRaw!.truncated, result: terminalResult!.value, resultTruncated: terminalResult!.truncated } : null,
+  };
+};
+const safeJson = (value: unknown): string => { try { return JSON.stringify(value) ?? 'null'; } catch { return '[Unserializable terminal result]'; } };
 const followUpPrompt = (prompt: string, correctivePrompt: string | null): string => correctivePrompt ? `${prompt}\n\nFollow-up corrective instruction:\n${correctivePrompt}` : prompt;
 const correctionPrompt = (originalPrompt: string, evidence: { command: string; exitCode: number | null; output: string; outputTruncated: boolean }): string => {
   const output = evidence.output.length > MAX_CORRECTION_EVIDENCE_CHARS ? `${evidence.output.slice(0, MAX_CORRECTION_EVIDENCE_CHARS)}\n[Output truncated by NightShift.]` : evidence.output;

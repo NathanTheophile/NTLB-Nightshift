@@ -156,6 +156,29 @@ describe('Planner Run vertical slice', () => {
     } finally { await fixture.dispose(); }
   }, 15_000);
 
+  it('records bounded correction failure diagnostics and continues the queue', async () => {
+    const fixture = await setup();
+    try {
+      await installValidationScript(fixture, false);
+      const adapter = new DiagnosticFailingCorrectionAdapter(); const service = fixture.service(adapter, 10_000); service.setConcurrencyLimit(1);
+      const failedTask = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Correction fails.', requestedAgentId: null, requestedModelId: null, priority: 1 });
+      service.schedule();
+      const firstTerminal = await waitFor(() => service.list(fixture.workspace.id).find((run) => run.taskId === failedTask.id && ['completed', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(run.status)), 8_000);
+      expect(firstTerminal.status).toBe('failed');
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Queue continues.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      await waitFor(() => service.list(fixture.workspace.id).some((run) => run.status === 'completed') ? true : undefined, 8_000);
+      const failed = service.list(fixture.workspace.id).find((run) => run.taskId === failedTask.id)!;
+      expect(failed.failureReason).toContain('Automatic correction');
+      const events = fixture.runs.listEvents(failed.id);
+      expect(events.map((item) => item.eventType)).toContain('correction_failed');
+      const event = events.find((item) => item.eventType === 'correction_failed')!;
+      const payload = event.payload as { attempt: number; resumed: boolean; priorExternalSessionId: string; externalSessionId: string; adapterId: string; exitCode: number; signal: string; stderr: string; stderrTruncated: boolean; terminalEvent: { raw: string; rawTruncated: boolean; result: string; resultTruncated: boolean } };
+      expect(payload).toMatchObject({ attempt: 1, resumed: true, priorExternalSessionId: 'session-test', externalSessionId: 'session-2', adapterId: 'claude-code', exitCode: 17, signal: 'SIGTERM', stderrTruncated: true, terminalEvent: { rawTruncated: true, resultTruncated: true } });
+      expect(Buffer.byteLength(payload.stderr)).toBeLessThanOrEqual(4 * 1024); expect(Buffer.byteLength(payload.terminalEvent.raw)).toBeLessThanOrEqual(4 * 1024); expect(Buffer.byteLength(payload.terminalEvent.result)).toBeLessThanOrEqual(4 * 1024);
+      expect(failed.failureReason).toContain('Automatic correction attempt 1 failed'); expect(failed.failureReason).toContain('correction_failed activity evidence'); expect(failed.worktreePath).toBeTruthy(); expect(service.validationCommands(failed.id)).toHaveLength(1);
+    } finally { await fixture.dispose(); }
+  }, 15_000);
+
   it('fails after the correction budget is exhausted, retains evidence, and continues the queue', async () => {
     const fixture = await setup();
     try {
@@ -444,7 +467,7 @@ const setup = async () => {
     services.push(value);
     return value;
   };
-  return { repository, workspace, tasks, runs, worktreeService, service, dispose: async () => { await waitFor(() => services.every((value) => value.list(workspace.id).every((run) => !isExecutingRun(run, tasks))) ? true : undefined, 2_000).catch(() => undefined); await pause(500); database.close(); await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } };
+  return { repository, workspace, tasks, runs, worktreeService, service, dispose: async () => { await waitFor(() => services.every((value) => value.isIdle()) ? true : undefined, 2_000); database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
 };
 
 const installValidationScript = async (fixture: Awaited<ReturnType<typeof setup>>, initiallyFixed: boolean): Promise<void> => {
@@ -472,6 +495,22 @@ class CorrectingAdapter extends CompletingAdapter {
     this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
     const sessionId = `session-${this.starts}`;
     return { handleId: randomUUID(), externalSessionId: sessionId, events: [], completion: Promise.resolve({ handleId: 'complete', succeeded: true, failureReason: null, exitCode: 0, signal: null, externalSessionId: sessionId, events: [], terminalEvent: null, stderr: '' }) };
+  }
+}
+class DiagnosticFailingCorrectionAdapter extends CompletingAdapter {
+  private normalStarts = 0;
+  public override capabilities = (): AgentCapabilities => ({ ...capabilities, resume: true });
+  public override async startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    if (spec.prompt.startsWith('The implementation from the previous turn')) {
+      this.starts += 1; this.workingDirectories.push(spec.workingDirectory);
+      const terminalEvent = { sequence: 1, timestamp: new Date().toISOString(), raw: 'terminal-raw-'.repeat(1_000), parsed: { output: 'terminal-result-'.repeat(1_000) }, type: 'result', externalSessionId: 'session-2', terminal: true, parseError: null };
+      return { handleId: 'correction-failed', externalSessionId: 'session-2', events: [terminalEvent], completion: Promise.resolve({ handleId: 'correction-failed', succeeded: false, failureReason: 'Claude exited with code 17.', exitCode: 17, signal: 'SIGTERM', externalSessionId: 'session-2', events: [terminalEvent], terminalEvent, stderr: 'stderr-'.repeat(1_000) }) };
+    }
+    const handle = await super.startRun(spec);
+    await writeFile(join(spec.workingDirectory, 'correction.ts'), 'export {};\n');
+    this.normalStarts += 1;
+    if (this.normalStarts > 1) await writeFile(join(spec.workingDirectory, 'fixed.txt'), 'fixed\n');
+    return handle;
   }
 }
 class CorrectionHangingAdapter extends CompletingAdapter {
@@ -512,7 +551,6 @@ const completedResult = (): AgentExecutionResult => ({ handleId: 'complete', suc
 const failedResult = (): AgentExecutionResult => ({ handleId: 'failed', succeeded: false, failureReason: 'Expected failure.', exitCode: 1, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' });
 const cancelledTestResult = (): AgentExecutionResult => ({ handleId: 'cancelled', succeeded: false, failureReason: 'Cancelled by user.', exitCode: null, signal: 'SIGTERM', externalSessionId: null, events: [], terminalEvent: null, stderr: '' });
 const pause = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const isExecutingRun = (run: Run, tasks: PlannerTaskRepository): boolean => run.status === 'running' || run.status === 'cancel_requested' || (run.status === 'preparing' && (Boolean(run.worktreePath) || tasks.findById(run.taskId)?.status === 'running'));
 const publishedSource = async (fixture: Awaited<ReturnType<typeof setup>>): Promise<Run> => {
   const task = fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Published source.', requestedAgentId: null, requestedModelId: null, priority: 1 });
   fixture.tasks.setStatus(task.id, 'completed');
