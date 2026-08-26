@@ -23,5 +23,8 @@ export interface RunService {
   schedule(): void;
   requestCancellation(runId: string): Promise<Run>;
   publishCandidate(runId: string): Promise<Run>;
+  queuePaused(): boolean;
+  setQueuePaused(paused: boolean): boolean;
+  purgePlannerTask(taskId: string): Promise<void>;
   createFollowUp(runId: string, prompt: string): Promise<Run>;
 }

@@ -31,6 +31,7 @@ export class RunRepository {
   public find(id: string): Run | undefined { const row = this.database.queryOne<RunRow>('SELECT * FROM runs WHERE id = ?', id); return row ? mapRun(row) : undefined; }
   public findRequired(id: string): Run { const run = this.find(id); if (!run) throw new Error(`Run ${id} was not found.`); return run; }
   public list(workspaceId: string): Run[] { return this.database.queryAll<RunRow>('SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at DESC', workspaceId).map(mapRun); }
+  public listByTask(taskId: string): Run[] { return this.database.queryAll<RunRow>('SELECT * FROM runs WHERE task_id = ? ORDER BY created_at', taskId).map(mapRun); }
   public setPreparation(id: string, baseSha: string, worktreePath: string): Run { this.update(id, { base_sha: baseSha, worktree_path: worktreePath }); return this.findRequired(id); }
   public setBaseSha(id: string, baseSha: string): Run { this.update(id, { base_sha: baseSha }); return this.findRequired(id); }
   public setCandidateCommit(id: string, branchName: string, commitSha: string): Run {
@@ -99,6 +100,18 @@ export class RunRepository {
   public staleRuns(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE status IN ('preparing', 'running', 'cancel_requested') ORDER BY created_at").map(mapRun); }
   public runningValidations(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE validation_status = 'running' ORDER BY created_at").map(mapRun); }
   public publishingCandidates(): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE candidate_publish_state = 'publishing'").map(mapRun); }
+  public deleteTaskHistory(taskId: string): void {
+    const runIds = this.database.queryAll<{ id: string }>('SELECT id FROM runs WHERE task_id = ?', taskId).map(({ id }) => id);
+    if (!runIds.length) return;
+    const placeholders = runIds.map(() => '?').join(', ');
+    this.database.execute(`DELETE FROM run_integration_reviews WHERE run_id IN (${placeholders})`, ...runIds);
+    this.database.execute(`DELETE FROM run_validation_commands WHERE run_id IN (${placeholders})`, ...runIds);
+    this.database.execute(`DELETE FROM run_batch_steps WHERE run_id IN (${placeholders})`, ...runIds);
+    this.database.execute(`DELETE FROM run_events WHERE run_id IN (${placeholders})`, ...runIds);
+    this.database.execute(`DELETE FROM run_attempts WHERE run_id IN (${placeholders})`, ...runIds);
+    this.database.execute(`UPDATE runs SET source_run_id = NULL WHERE task_id = ?`, taskId);
+    this.database.execute(`DELETE FROM runs WHERE task_id = ?`, taskId);
+  }
   public setBatchStepStatus(id: string, status: BatchStepStatus, values: Partial<Pick<BatchStepRow, 'started_at' | 'finished_at' | 'external_session_id' | 'result_summary' | 'failure_reason'>> = {}): BatchStep {
     const entries = Object.entries({ status, ...values }).filter(([, value]) => value !== undefined);
     this.database.execute(`UPDATE run_batch_steps SET ${entries.map(([field]) => `${field} = ?`).join(', ')} WHERE id = ?`, ...entries.map(([, value]) => value), id);

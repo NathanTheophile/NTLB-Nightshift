@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +19,30 @@ const exec = promisify(execFile);
 const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
 
 describe('candidate publishing and follow-up runs', () => {
+  it('automatically publishes a validated top-level Planner Run', async () => {
+    const fixture = await setup();
+    try {
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Automatically publish.', requestedAgentId: fixture.adapter.id, requestedModelId: 'model', priority: 1 });
+      fixture.service.schedule();
+      const run = await waitFor(() => fixture.service.list(fixture.workspace.id)[0]);
+      const completed = await waitFor(() => fixture.service.find(run.id).then((value) => value && ['completed', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(value.status) ? value : undefined));
+      expect(completed).toMatchObject({ status: 'completed', validationStatus: 'passed' }); const published = await waitFor(() => fixture.service.find(run.id).then((value) => value?.candidatePublishState === 'published' ? value : undefined));
+      expect(published.status).toBe('completed'); expect(published.candidateCommitSha).toMatch(/^[0-9a-f]{40}$/);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('keeps a completed Run and records automatic publication failure', async () => {
+    const fixture = await setup();
+    try {
+      await exec('git', ['-C', fixture.repository, 'remote', 'remove', 'origin']);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Publication fails.', requestedAgentId: fixture.adapter.id, requestedModelId: 'model', priority: 1 }); fixture.service.schedule();
+      const run = await waitFor(() => fixture.service.list(fixture.workspace.id)[0]);
+      const completed = await waitFor(() => fixture.service.find(run.id).then((value) => value && ['completed', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(value.status) ? value : undefined));
+      expect(completed).toMatchObject({ status: 'completed', validationStatus: 'passed' }); const failed = await waitFor(() => fixture.service.find(run.id).then((value) => value?.candidatePublishState === 'failed' ? value : undefined));
+      expect(failed.status).toBe('completed'); expect(failed.candidateFailureReason).toContain('origin remote');
+    } finally { await fixture.dispose(); }
+  });
+
   it('commits tracked and untracked changes once, pushes only its candidate branch, and rejects no-change Runs', async () => {
     const fixture = await setup();
     try {
@@ -88,14 +112,14 @@ describe('candidate publishing and follow-up runs', () => {
 
 const setup = async () => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-candidate-')); const repository = join(root, 'repo'); const remote = join(root, 'remote.git'); const database = new DatabaseService(':memory:');
-  await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']); await writeFile(join(repository, 'base.txt'), 'base\n'); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); await exec('git', ['init', '--bare', remote]); await exec('git', ['-C', repository, 'remote', 'add', 'origin', remote]);
+  await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']); await writeFile(join(repository, 'base.txt'), 'base\n'); await writeFile(join(repository, 'package.json'), JSON.stringify({ scripts: { test: 'node -e ""' } })); await mkdir(join(repository, 'node_modules')); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); await exec('git', ['-C', repository, 'branch', '-M', 'dev']); await exec('git', ['init', '--bare', remote]); await exec('git', ['-C', repository, 'remote', 'add', 'origin', remote]);
   const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repo', true); const adapter = new FollowUpAdapter(); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'model', timeoutMs: 2_000 });
   const completedRun = async (changes: boolean, executionMode: 'single_agent' | 'sequential_batch' = 'single_agent') => {
     const task = tasks.create({ workspaceId: workspace.id, prompt: 'Change files.', requestedAgentId: adapter.id, requestedModelId: 'model', priority: 1, executionMode, batchSteps: executionMode === 'sequential_batch' ? ['First step', 'Second step'] : [] }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: adapter.id, resolvedModelId: 'model', executionMode }); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim(); const worktree = await new GitWorktreeService(join(root, 'worktrees')).createForRun({ runId: run.id, title: task.title, repositoryRoot: repository, baseSha: base }); runs.setPreparation(run.id, base, worktree.path);
     if (changes) { await writeFile(join(worktree.path, 'base.txt'), 'tracked change\n'); await writeFile(join(worktree.path, 'untracked.txt'), 'untracked\n'); }
     tasks.setStatus(task.id, 'completed'); return runs.setStatus(run.id, 'completed');
   };
-  return { repository, remote, service, adapter, tasks, completedRun, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
+  return { repository, remote, workspace, service, adapter, tasks, completedRun, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
 };
 
 class FollowUpAdapter implements AgentAdapter {
@@ -106,4 +130,4 @@ class FollowUpAdapter implements AgentAdapter {
   public cancel(): Promise<void> { return Promise.resolve(); }
 }
 
-const waitFor = async <T>(get: () => T | Promise<T>): Promise<NonNullable<T>> => { const until = Date.now() + 2_000; for (;;) { const value = await get(); if (value) return value; if (Date.now() > until) throw new Error('Timed out.'); await new Promise((resolve) => setTimeout(resolve, 10)); } };
+const waitFor = async <T>(get: () => T | Promise<T>): Promise<NonNullable<T>> => { const until = Date.now() + 5_000; for (;;) { const value = await get(); if (value) return value; if (Date.now() > until) throw new Error('Timed out.'); await new Promise((resolve) => setTimeout(resolve, 10)); } };

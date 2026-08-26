@@ -48,6 +48,23 @@ export class PlannerService implements PlannerServiceContract {
     return this.tasks.archiveCompleted(taskId);
   }
 
+  public deleteQueuedTask(taskId: string): void {
+    if (!taskId) throw new Error('A Planner task id is required.');
+    this.tasks.deleteQueued(taskId);
+  }
+
+  public updateQueuedPriority(taskId: string, priority: number): PlannerTask {
+    if (!taskId) throw new Error('A Planner task id is required.');
+    if (!Number.isInteger(priority) || priority < 1 || priority > 99) throw new Error('Planner priority must be an integer between 1 and 99.');
+    return this.tasks.updateQueuedPriority(taskId, priority);
+  }
+
+  public async purgeTask(taskId: string): Promise<void> {
+    if (!taskId) throw new Error('A Planner task id is required.');
+    if (!this.runs) throw new Error('Run history is unavailable.');
+    await this.runs.purgePlannerTask(taskId);
+  }
+
   private assertWorkspace(workspaceId: string): void {
     if (!workspaceId || !this.workspaces.findById(workspaceId)) {
       throw new Error('A valid workspace is required.');

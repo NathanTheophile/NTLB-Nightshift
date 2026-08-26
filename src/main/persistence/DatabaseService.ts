@@ -43,6 +43,18 @@ export class DatabaseService {
     return { changes: Number(result.changes) };
   }
 
+  public transaction<T>(operation: () => T): T {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const result = operation();
+      this.database.exec('COMMIT;');
+      return result;
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
   public close(): void {
     this.database.close();
   }

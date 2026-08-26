@@ -38,6 +38,7 @@ export interface PlannerSelectionCatalog {
 }
 export interface PlannerConcurrencySettings { limit: 1 | 2 | 3 | 4; }
 export interface PlannerRunTimeoutSettings { timeoutMs: 1_800_000 | 3_600_000 | 5_400_000 | 7_200_000; }
+export interface PlannerQueueSettings { paused: boolean; }
 
 export interface CreateWorkerInput { workspaceId: string; title: string; agentId: string; modelId: string; permissionProfile: WorkerPermissionProfile; isolationMode: IsolationMode; }
 export interface WorkerSelectionCatalog { agents: readonly AgentDescriptor[]; modelsByAgent: Readonly<Record<string, readonly ModelDescriptor[]>>; }
@@ -81,11 +82,16 @@ export const IPC_CHANNELS = {
   plannerListTasks: 'planner:list-tasks',
   plannerCreateTask: 'planner:create-task',
   plannerArchiveTask: 'planner:archive-task',
+  plannerDeleteQueuedTask: 'planner:delete-queued-task',
+  plannerUpdateQueuedPriority: 'planner:update-queued-priority',
+  plannerPurgeTask: 'planner:purge-task',
   plannerSelectionCatalog: 'planner:selection-catalog',
   plannerGetConcurrency: 'planner:get-concurrency',
   plannerSetConcurrency: 'planner:set-concurrency',
   plannerGetRunTimeout: 'planner:get-run-timeout',
   plannerSetRunTimeout: 'planner:set-run-timeout',
+  plannerGetQueueState: 'planner:get-queue-state',
+  plannerSetQueueState: 'planner:set-queue-state',
   runsList: 'runs:list',
   runsNavigation: 'runs:navigation',
   runsEvents: 'runs:events',
@@ -124,11 +130,16 @@ export interface IpcContract {
   [IPC_CHANNELS.plannerListTasks]: { request: { workspaceId: string }; response: PlannerTask[] };
   [IPC_CHANNELS.plannerCreateTask]: { request: CreatePlannerTaskInput; response: PlannerTask };
   [IPC_CHANNELS.plannerArchiveTask]: { request: { taskId: string }; response: PlannerTask };
+  [IPC_CHANNELS.plannerDeleteQueuedTask]: { request: { taskId: string }; response: undefined };
+  [IPC_CHANNELS.plannerUpdateQueuedPriority]: { request: { taskId: string; priority: number }; response: PlannerTask };
+  [IPC_CHANNELS.plannerPurgeTask]: { request: { taskId: string }; response: undefined };
   [IPC_CHANNELS.plannerSelectionCatalog]: { request: undefined; response: PlannerSelectionCatalog };
   [IPC_CHANNELS.plannerGetConcurrency]: { request: undefined; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.plannerSetConcurrency]: { request: PlannerConcurrencySettings; response: PlannerConcurrencySettings };
   [IPC_CHANNELS.plannerGetRunTimeout]: { request: undefined; response: PlannerRunTimeoutSettings };
   [IPC_CHANNELS.plannerSetRunTimeout]: { request: PlannerRunTimeoutSettings; response: PlannerRunTimeoutSettings };
+  [IPC_CHANNELS.plannerGetQueueState]: { request: undefined; response: PlannerQueueSettings };
+  [IPC_CHANNELS.plannerSetQueueState]: { request: PlannerQueueSettings; response: PlannerQueueSettings };
   [IPC_CHANNELS.runsList]: { request: { workspaceId: string }; response: Run[] };
   [IPC_CHANNELS.runsNavigation]: { request: { workspaceId: string }; response: RunNavigationItem[] };
   [IPC_CHANNELS.runsEvents]: { request: ListRunEventsRequest; response: RunEventPage };
@@ -175,11 +186,16 @@ export interface NightShiftApi {
     listTasks: (workspaceId: string) => Promise<PlannerTask[]>;
     createTask: (input: CreatePlannerTaskInput) => Promise<PlannerTask>;
     archiveTask: (taskId: string) => Promise<PlannerTask>;
+    deleteQueuedTask: (taskId: string) => Promise<void>;
+    updateQueuedPriority: (taskId: string, priority: number) => Promise<PlannerTask>;
+    purgeTask: (taskId: string) => Promise<void>;
     selectionCatalog: () => Promise<PlannerSelectionCatalog>;
     getConcurrency: () => Promise<PlannerConcurrencySettings>;
     setConcurrency: (limit: 1 | 2 | 3 | 4) => Promise<PlannerConcurrencySettings>;
     getRunTimeout: () => Promise<PlannerRunTimeoutSettings>;
     setRunTimeout: (timeoutMs: PlannerRunTimeoutSettings['timeoutMs']) => Promise<PlannerRunTimeoutSettings>;
+    getQueueState: () => Promise<PlannerQueueSettings>;
+    setQueueState: (paused: boolean) => Promise<PlannerQueueSettings>;
   };
   runs: {
     list: (workspaceId: string) => Promise<Run[]>;

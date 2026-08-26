@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { CreatePlannerTaskInput } from '@shared/contracts/ipc';
-import type { PlannerExecutionMode, PlannerTask, PlannerTaskStatus } from '@shared/domain/entities';
+import type { PlannerTask, PlannerTaskStatus } from '@shared/domain/entities';
 
 import type { DatabaseService } from '../DatabaseService';
 
@@ -115,6 +115,28 @@ export class PlannerTaskRepository {
     );
     return this.findRequired(taskId);
   }
+
+  public deleteQueued(taskId: string): void {
+    this.database.transaction(() => {
+      const task = this.findRequired(taskId);
+      if (task.status !== 'queued') throw new Error('Only queued Planner tasks can be deleted.');
+      this.database.execute('DELETE FROM planner_batch_steps WHERE task_id = ?', taskId);
+      if (this.database.execute("DELETE FROM tasks WHERE id = ? AND status = 'queued'", taskId).changes !== 1) throw new Error('Only queued Planner tasks can be deleted.');
+    });
+  }
+
+  public updateQueuedPriority(taskId: string, priority: number): PlannerTask {
+    const changed = this.database.execute("UPDATE tasks SET priority = ?, updated_at = ? WHERE id = ? AND status = 'queued'", priority, new Date().toISOString(), taskId).changes;
+    if (changed !== 1) throw new Error('Only queued Planner task priorities can be changed.');
+    return this.findRequired(taskId);
+  }
+
+  public deleteAfterRunPurge(taskId: string): void {
+    this.database.execute('DELETE FROM planner_batch_steps WHERE task_id = ?', taskId);
+    if (this.database.execute('DELETE FROM tasks WHERE id = ?', taskId).changes !== 1) throw new Error(`Planner task ${taskId} was not found.`);
+  }
+
+  public transaction<T>(operation: () => T): T { return this.database.transaction(operation); }
 
   private findRequired(id: string): PlannerTask {
     const row = this.database.queryOne<PlannerTaskRow>('SELECT * FROM tasks WHERE id = ?', id);

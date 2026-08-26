@@ -71,6 +71,12 @@ export class RunService implements RunServiceContract {
     this.settings?.set('planner.run_timeout_ms', normalized);
     return normalized;
   }
+  public queuePaused(): boolean { return this.settings?.get<boolean>('planner.queue_paused') === true; }
+  public setQueuePaused(paused: boolean): boolean {
+    this.settings?.set('planner.queue_paused', paused);
+    if (!paused) this.schedule();
+    return paused;
+  }
   public schedule(): void {
     this.scheduleRequested = true;
     if (!this.scheduling) void this.fillSlots().catch((error: unknown) => console.error('[Planner] Scheduler stopped unexpectedly.', error));
@@ -99,6 +105,22 @@ export class RunService implements RunServiceContract {
     this.followUpQueue.push(run.id); this.schedule();
     return Promise.resolve(run);
   }
+  public async purgePlannerTask(taskId: string): Promise<void> {
+    const task = this.tasks.findById(taskId);
+    if (!task) throw new Error(`Planner task ${taskId} was not found.`);
+    if (!['completed', 'failed', 'blocked', 'cancelled'].includes(task.status)) throw new Error('Only terminal Planner tasks can be permanently deleted.');
+    const history = this.runs.listByTask(taskId);
+    if (history.some((run) => !terminalStatuses.has(run.status) || run.candidatePublishState === 'publishing' || this.active.has(run.id) || this.publishing.has(run.id) || this.slots.has(run.id))) {
+      throw new Error('Planner task cannot be deleted while an associated Run is active.');
+    }
+    for (const run of history) {
+      if (run.worktreePath) await this.worktrees.removeAfterEvidencePersisted(run.worktreePath);
+    }
+    this.tasks.transaction(() => {
+      this.runs.deleteTaskHistory(taskId);
+      this.tasks.deleteAfterRunPurge(taskId);
+    });
+  }
   // Scheduling work is intentionally synchronous until the launched Run promises yield.
   // eslint-disable-next-line @typescript-eslint/require-await
   private async fillSlots(): Promise<void> {
@@ -106,6 +128,7 @@ export class RunService implements RunServiceContract {
     try {
       do {
         this.scheduleRequested = false;
+        if (this.queuePaused()) { this.scheduleRequested = false; break; }
         while (this.slots.size < this.concurrencyLimit()) {
           const followUpRunId = this.followUpQueue.shift();
           if (followUpRunId) {
@@ -177,6 +200,7 @@ export class RunService implements RunServiceContract {
       this.runs.setStatus(run.id, status, { finished_at: new Date().toISOString(), exit_code: result.exitCode, result_summary: result.terminalEvent?.raw ?? null, failure_reason: status === 'completed' ? null : status === 'timed_out' ? 'Run exceeded the hard timeout.' : result.failureReason ?? (cancelled ? 'Cancelled by user.' : 'Run failed.'), validation_status: this.runs.findRequired(run.id).validationStatus ?? 'not_configured', external_session_id: result.externalSessionId, final_head_sha: finalGit.head, final_git_state: JSON.stringify(finalGit) });
       this.runs.appendEvent(run.id, 'terminal', { status, exitCode: result.exitCode, signal: result.signal });
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(status), { status });
+      if (status === 'completed' && !isFollowUp && this.runs.findRequired(run.id).validationStatus === 'passed') await this.publishCandidateAutomatically(run.id, worktree.path);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error); const current = this.runs.findRequired(run.id);
       if (current.status === 'cancel_requested') {
@@ -193,6 +217,20 @@ export class RunService implements RunServiceContract {
       if (run.executionMode === 'sequential_batch') this.runs.appendEvent(run.id, batchTerminalEvent(this.runs.findRequired(run.id).status), { status: this.runs.findRequired(run.id).status, detail });
       if (!isFollowUp) this.tasks.setStatus(task.id, taskStatus(this.runs.findRequired(run.id).status));
     } finally { this.active.delete(run.id); }
+  }
+  private async publishCandidateAutomatically(runId: string, worktreePath: string): Promise<void> {
+    const changes = await runGit(worktreePath, ['status', '--porcelain=v1']);
+    if (changes.exitCode !== 0) {
+      this.runs.setCandidatePublishFailure(runId, 'Could not inspect candidate changes.');
+      this.runs.appendEvent(runId, 'candidate_publish_failed', { reason: 'Could not inspect candidate changes.' });
+      return;
+    }
+    if (!changes.stdout.trim()) {
+      this.runs.appendEvent(runId, 'candidate_not_required', { reason: 'Run completed with no changes.' });
+      return;
+    }
+    try { await this.publishCandidate(runId); }
+    catch (error) { this.runs.appendEvent(runId, 'candidate_publish_failed', { reason: error instanceof Error ? error.message : String(error) }); }
   }
   private followUpBase(sourceRunId: string): GitCommandResult {
     const source = this.runs.findRequired(sourceRunId);
@@ -264,7 +302,7 @@ export class RunService implements RunServiceContract {
       return this.runs.setCandidatePublished(run.id, remote);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error); const run = this.runs.find(runId);
-      if (run?.candidateCommitSha) this.runs.setCandidatePublishFailure(runId, detail);
+      if (run?.status === 'completed') this.runs.setCandidatePublishFailure(runId, detail);
       throw error;
     }
   }
