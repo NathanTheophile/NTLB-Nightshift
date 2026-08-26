@@ -10,7 +10,7 @@ import { DatabaseService } from '../src/main/persistence/DatabaseService';
 import { PlannerTaskRepository } from '../src/main/persistence/repositories/PlannerTaskRepository';
 import { RunRepository } from '../src/main/persistence/repositories/RunRepository';
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
-import { GitWorktreeService } from '../src/main/services/GitWorktreeService';
+import { GitWorktreeService, runGit } from '../src/main/services/GitWorktreeService';
 import { RunService } from '../src/main/services/RunService';
 import type { AgentAdapter, AgentExecutionHandle, RunStartSpec } from '../src/main/services/contracts/AgentAdapter';
 import type { AgentCapabilities, AgentDescriptor } from '../src/shared/domain/entities';
@@ -19,6 +19,17 @@ const exec = promisify(execFile);
 const capabilities: AgentCapabilities = { interactive: false, headless: true, structuredEvents: true, rawPty: false, resume: false, modelOverride: true, cancel: true, workingDirectory: true, imageInput: false, subagents: false, plannerValidated: true, workerValidated: false, renderMode: 'structured' };
 
 describe('candidate publishing and follow-up runs', () => {
+  it('bounds a hung Git command and returns a clear failure result', async () => {
+    const fixture = await setup();
+    try {
+      const startedAt = Date.now();
+      const result = await runGit(fixture.repository, ['-c', 'alias.hang=!node -e "setInterval(() => {}, 1000)"', 'hang'], { timeoutMs: 100 });
+      expect(result).toMatchObject({ exitCode: -1 });
+      expect(result.stderr).toContain('Git command timed out after 100ms.');
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    } finally { await fixture.dispose(); }
+  });
+
   it('automatically publishes a validated top-level Planner Run', async () => {
     const fixture = await setup();
     try {
@@ -40,6 +51,38 @@ describe('candidate publishing and follow-up runs', () => {
       const completed = await waitFor(() => fixture.service.find(run.id).then((value) => value && ['completed', 'failed', 'blocked', 'cancelled', 'timed_out'].includes(value.status) ? value : undefined));
       expect(completed).toMatchObject({ status: 'completed', validationStatus: 'passed' }); const failed = await waitFor(() => fixture.service.find(run.id).then((value) => value?.candidatePublishState === 'failed' ? value : undefined));
       expect(failed.status).toBe('completed'); expect(failed.candidateFailureReason).toContain('origin remote');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('releases the Planner slot after automatic Candidate publication fails', async () => {
+    const fixture = await setup();
+    try {
+      await exec('git', ['-C', fixture.repository, 'remote', 'remove', 'origin']);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'First publication fails.', requestedAgentId: fixture.adapter.id, requestedModelId: 'model', priority: 1 });
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Second publication fails.', requestedAgentId: fixture.adapter.id, requestedModelId: 'model', priority: 1 });
+      fixture.service.schedule();
+      const completed = await waitFor(() => {
+        const runs = fixture.service.list(fixture.workspace.id);
+        return runs.length === 2 && runs.every((run) => run.status === 'completed' && run.candidatePublishState === 'failed') ? runs : undefined;
+      });
+      expect(completed).toHaveLength(2);
+      expect(fixture.adapter.starts).toBe(2);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('times out hung Candidate publication and continues the unattended queue', async () => {
+    const fixture = await setup(100);
+    try {
+      await exec('git', ['-C', fixture.repository, 'config', 'remote.origin.uploadpack', 'node -e "setInterval(() => {}, 1000)"']);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Hung publication.', requestedAgentId: fixture.adapter.id, requestedModelId: 'model', priority: 1 });
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Queue continues.', requestedAgentId: fixture.adapter.id, requestedModelId: 'model', priority: 1 });
+      fixture.service.schedule();
+      const completed = await waitFor(() => {
+        const runs = fixture.service.list(fixture.workspace.id);
+        return runs.length === 2 && runs.every((run) => run.status === 'completed' && run.candidatePublishState === 'failed' && run.candidateFailureReason?.includes('timed out after 100ms')) ? runs : undefined;
+      });
+      expect(completed).toHaveLength(2);
+      expect(fixture.adapter.starts).toBe(2);
     } finally { await fixture.dispose(); }
   });
 
@@ -110,10 +153,10 @@ describe('candidate publishing and follow-up runs', () => {
   });
 });
 
-const setup = async () => {
+const setup = async (candidateGitTimeoutMs?: number) => {
   const root = await mkdtemp(join(tmpdir(), 'nightshift-candidate-')); const repository = join(root, 'repo'); const remote = join(root, 'remote.git'); const database = new DatabaseService(':memory:');
   await exec('git', ['init', repository]); await exec('git', ['-C', repository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', repository, 'config', 'user.name', 'NightShift Test']); await writeFile(join(repository, 'base.txt'), 'base\n'); await writeFile(join(repository, 'package.json'), JSON.stringify({ scripts: { test: 'node -e ""' } })); await mkdir(join(repository, 'node_modules')); await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'base']); await exec('git', ['-C', repository, 'branch', '-M', 'dev']); await exec('git', ['init', '--bare', remote]); await exec('git', ['-C', repository, 'remote', 'add', 'origin', remote]);
-  const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repo', true); const adapter = new FollowUpAdapter(); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'model', timeoutMs: 2_000 });
+  const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repo', true); const adapter = new FollowUpAdapter(); const service = new RunService(runs, tasks, workspaces, new GitWorktreeService(join(root, 'worktrees')), new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'model', timeoutMs: 2_000 }, undefined, undefined, candidateGitTimeoutMs);
   const completedRun = async (changes: boolean, executionMode: 'single_agent' | 'sequential_batch' = 'single_agent') => {
     const task = tasks.create({ workspaceId: workspace.id, prompt: 'Change files.', requestedAgentId: adapter.id, requestedModelId: 'model', priority: 1, executionMode, batchSteps: executionMode === 'sequential_batch' ? ['First step', 'Second step'] : [] }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: adapter.id, resolvedModelId: 'model', executionMode }); const base = (await exec('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim(); const worktree = await new GitWorktreeService(join(root, 'worktrees')).createForRun({ runId: run.id, title: task.title, repositoryRoot: repository, baseSha: base }); runs.setPreparation(run.id, base, worktree.path);
     if (changes) { await writeFile(join(worktree.path, 'base.txt'), 'tracked change\n'); await writeFile(join(worktree.path, 'untracked.txt'), 'untracked\n'); }

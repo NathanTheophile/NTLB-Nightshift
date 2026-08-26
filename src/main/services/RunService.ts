@@ -5,6 +5,7 @@ import { assertNodeValidationDependencies, ProjectValidationService } from './Pr
 import { WindowsProcessSupervisor } from './WindowsProcessSupervisor';
 import type { ProcessSupervisor } from './contracts/ProcessSupervisor';
 import type { WorktreeService } from './contracts/WorktreeService';
+import type { RunArtifactCleaner } from './contracts/RunArtifactCleaner';
 import type { PlannerTaskRepository } from '../persistence/repositories/PlannerTaskRepository';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
 import type { WorkspaceRepository } from '../persistence/repositories/WorkspaceRepository';
@@ -16,6 +17,8 @@ import { resolveEffectiveDevBase } from './ReviewIntegrationService';
 import { candidateBranchForRunName } from './RunNaming';
 
 const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', 'cancelled', 'timed_out']);
+const CANDIDATE_GIT_TIMEOUT_MS = 3 * 60_000;
+const candidateGitOptions = (timeoutMs: number) => ({ timeoutMs, environment: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } });
 
 export interface PlannerRunDefaults { agentId: string; modelId: string; timeoutMs: number; }
 export class RunService implements RunServiceContract {
@@ -28,7 +31,7 @@ export class RunService implements RunServiceContract {
   private configuredTimeoutMs: number | undefined;
   private scheduling = false;
   private scheduleRequested = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly candidateGitTimeoutMs = CANDIDATE_GIT_TIMEOUT_MS, private readonly artifacts?: RunArtifactCleaner) { this.validation = new ProjectValidationService(runs, validationSupervisor); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -113,6 +116,7 @@ export class RunService implements RunServiceContract {
     if (history.some((run) => !terminalStatuses.has(run.status) || run.candidatePublishState === 'publishing' || this.active.has(run.id) || this.publishing.has(run.id) || this.slots.has(run.id))) {
       throw new Error('Planner task cannot be deleted while an associated Run is active.');
     }
+    await this.artifacts?.removeForRuns(history);
     for (const run of history) {
       if (run.worktreePath) await this.worktrees.removeAfterEvidencePersisted(run.worktreePath);
     }
@@ -289,14 +293,15 @@ export class RunService implements RunServiceContract {
       if (!this.runs.tryBeginCandidatePublish(run.id)) throw new Error('Candidate publishing is already in progress.');
       const remote = 'origin'; const remoteUrl = await runGit(worktreePath, ['remote', 'get-url', remote]);
       if (remoteUrl.exitCode !== 0) throw new Error('Candidate publishing requires the configured origin remote.');
-      const remoteHead = await runGit(worktreePath, ['ls-remote', '--heads', remote, `refs/heads/${run.candidateBranchName}`]);
+      const remoteHead = await runGit(worktreePath, ['ls-remote', '--heads', remote, `refs/heads/${run.candidateBranchName}`], candidateGitOptions(this.candidateGitTimeoutMs));
+      if (remoteHead.exitCode !== 0) throw new Error(gitFailure('Could not inspect remote candidate branch.', remoteHead));
       const publishedSha = remoteHead.stdout.trim().split(/\s+/, 1)[0];
       if (publishedSha) {
         if (publishedSha !== run.candidateCommitSha) throw new Error(`Remote candidate branch ${run.candidateBranchName} already points to an incompatible commit.`);
         this.runs.appendEvent(run.id, 'candidate_publish_reused', { branchName: run.candidateBranchName, commitSha: run.candidateCommitSha, remote });
         return this.runs.setCandidatePublished(run.id, remote);
       }
-      const pushed = await runGit(worktreePath, ['push', remote, `refs/heads/${run.candidateBranchName}:refs/heads/${run.candidateBranchName}`]);
+      const pushed = await runGit(worktreePath, ['push', remote, `refs/heads/${run.candidateBranchName}:refs/heads/${run.candidateBranchName}`], candidateGitOptions(this.candidateGitTimeoutMs));
       if (pushed.exitCode !== 0) throw new Error(gitFailure('Could not push candidate branch.', pushed));
       this.runs.appendEvent(run.id, 'candidate_published', { branchName: run.candidateBranchName, commitSha: run.candidateCommitSha, remote });
       return this.runs.setCandidatePublished(run.id, remote);

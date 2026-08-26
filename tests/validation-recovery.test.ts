@@ -59,7 +59,7 @@ describe('project-default validation', () => {
     const fixture = await setup();
     try {
       await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node -e "setInterval(() => {}, 1000)"', lint: 'node -e "process.exit(0)"' } }));
-      const status = await new ProjectValidationService(fixture.runs, new WindowsProcessSupervisor()).validate(fixture.run.id, fixture.root, { deadline: Date.now() + 100, isCancellationRequested: () => false });
+      const status = await new ProjectValidationService(fixture.runs, new WindowsProcessSupervisor()).validate(fixture.run.id, fixture.root, { deadline: Date.now() + 300, isCancellationRequested: () => false });
       expect(status).toBe('interrupted'); expect(fixture.runs.validationCommands(fixture.run.id).map((command) => command.command)).toEqual(['npm run typecheck']); expect(fixture.runs.validationCommands(fixture.run.id)[0]!.status).toBe('interrupted');
     } finally { await fixture.dispose(); }
   }, 15_000);

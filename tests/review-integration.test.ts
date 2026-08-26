@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +19,13 @@ import type { ProcessSupervisor, SupervisedProcessResult, SupervisedProcessSnaps
 const exec = promisify(execFile);
 
 describe('ReviewIntegrationService review evidence', () => {
+  it('removes the temporary reviewer worktree after recording the verdict', async () => {
+    const fixture = await setup();
+    try {
+      await fixture.service.requestReview((await fixture.publishedCandidate('cleanup-review')).id);
+      expect(await exists(fixture.reviewer.inputs[0]!.worktreePath)).toBe(false);
+    } finally { await fixture.dispose(); }
+  });
   it.each([['PASS'], ['FAIL']] as const)('persists a valid %s reviewer verdict', async (verdict) => {
     const fixture = await setup();
     try {
@@ -66,6 +73,14 @@ describe('ReviewIntegrationService review evidence', () => {
 });
 
 describe('ReviewIntegrationService integration', () => {
+  it('removes the temporary integration worktree after integration', async () => {
+    const fixture = await setup();
+    try {
+      const review = await fixture.requestPass((await fixture.publishedCandidate('cleanup-integration')).id);
+      await fixture.service.integrate(review.id);
+      expect(await exists(join(fixture.storage, 'integrations', review.id))).toBe(false);
+    } finally { await fixture.dispose(); }
+  });
   it('integrates with a non-fast-forward merge and advances the canonical dev base', async () => {
     const fixture = await setup();
     try {
@@ -191,8 +206,10 @@ const setup = async (overrides: { validator?: IntegrationValidator } = {}) => {
   };
   const advanceDev = async (content: string, file = `dev-${Date.now()}.txt`) => { await writeFile(join(repository, file), content); await gitCommand(['add', file]); await gitCommand(['commit', '-m', 'advance dev']); await gitCommand(['push', 'origin', 'dev']); return (await gitCommand(['rev-parse', 'HEAD'])).stdout.trim(); };
   const createMergeOnDev = async (candidate: string) => { await gitCommand(['merge', '--no-ff', '--no-edit', candidate]); const sha = (await gitCommand(['rev-parse', 'HEAD'])).stdout.trim(); await gitCommand(['push', 'origin', 'dev']); return sha; };
-  return { repository, remote, workspace, settings, reviews, reviewer, get service() { return service; }, setGit: (value: GitCommand) => { git = value; service = makeService(); }, publishedCandidate, advanceDev, createMergeOnDev, requestPass: async (runId: string) => { reviewer.reset(); reviewer.raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); return service.requestReview(runId); }, remoteRef: async (branch: string) => (await exec('git', ['--git-dir', remote, 'rev-parse', `refs/heads/${branch}`])).stdout.trim(), git: gitCommand, commitAndPushCandidateReplacement: async (branch: string) => { await gitCommand(['switch', branch]); await writeFile(join(repository, 'replacement.txt'), 'replacement\n'); await gitCommand(['add', '.']); await gitCommand(['commit', '-m', 'replacement']); await gitCommand(['push', 'origin', branch, '--force']); await gitCommand(['switch', 'dev']); }, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
+  return { repository, remote, storage, workspace, settings, reviews, reviewer, get service() { return service; }, setGit: (value: GitCommand) => { git = value; service = makeService(); }, publishedCandidate, advanceDev, createMergeOnDev, requestPass: async (runId: string) => { reviewer.reset(); reviewer.raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); return service.requestReview(runId); }, remoteRef: async (branch: string) => (await exec('git', ['--git-dir', remote, 'rev-parse', `refs/heads/${branch}`])).stdout.trim(), git: gitCommand, commitAndPushCandidateReplacement: async (branch: string) => { await gitCommand(['switch', branch]); await writeFile(join(repository, 'replacement.txt'), 'replacement\n'); await gitCommand(['add', '.']); await gitCommand(['commit', '-m', 'replacement']); await gitCommand(['push', 'origin', branch, '--force']); await gitCommand(['switch', 'dev']); }, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true }); } };
 };
+
+const exists = async (path: string): Promise<boolean> => access(path).then(() => true, () => false);
 
 class FakeReviewer implements ReviewerRunner {
   public raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); public error: Error | undefined; public mutate = false; public readonly inputs: Parameters<ReviewerRunner['review']>[0][] = [];

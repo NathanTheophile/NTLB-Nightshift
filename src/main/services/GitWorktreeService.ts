@@ -6,7 +6,11 @@ import type { WorktreeHandle, WorktreeService, WorktreeSpec } from './contracts/
 import { candidateBranchForRunName, readableRunNameWithSuffix, readableRunSlug } from './RunNaming';
 
 export interface GitCommandResult { stdout: string; stderr: string; exitCode: number; }
-export type GitCommand = (repositoryRoot: string, argumentsList: readonly string[]) => Promise<GitCommandResult>;
+export interface GitCommandOptions {
+  timeoutMs?: number;
+  environment?: Readonly<Record<string, string>>;
+}
+export type GitCommand = (repositoryRoot: string, argumentsList: readonly string[], options?: GitCommandOptions) => Promise<GitCommandResult>;
 
 export class GitWorktreeService implements WorktreeService {
   public constructor(private readonly storageRoot: string, private readonly git: GitCommand = runGit) {}
@@ -83,10 +87,52 @@ const pathExists = async (path: string): Promise<boolean> => {
 };
 const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === 'ENOENT';
 
-export const runGit: GitCommand = (repositoryRoot, argumentsList) => new Promise((resolvePromise, reject) => {
-  const child = spawn('git', ['-C', repositoryRoot, ...argumentsList], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+export const runGit: GitCommand = (repositoryRoot, argumentsList, options = {}) => new Promise((resolvePromise, reject) => {
+  const child = spawn('git', ['-C', repositoryRoot, ...argumentsList], { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...options.environment } });
   let stdout = ''; let stderr = '';
+  let settled = false;
+  let timingOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const settle = (result: GitCommandResult): void => {
+    if (settled) return;
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    resolvePromise(result);
+  };
+  timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
+    timingOut = true;
+    void terminateProcessTree(child).finally(() => {
+      settle({ stdout, stderr: `${stderr}${stderr ? '\n' : ''}Git command timed out after ${options.timeoutMs}ms.`, exitCode: -1 });
+    });
+  }, options.timeoutMs);
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => { stdout += chunk; }); child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-  child.once('error', reject); child.once('close', (exitCode) => resolvePromise({ stdout, stderr, exitCode: exitCode ?? -1 }));
+  child.once('error', (error) => {
+    if (settled) return;
+    if (timeout) clearTimeout(timeout);
+    reject(error);
+  });
+  child.once('close', (exitCode) => { if (!timingOut) settle({ stdout, stderr, exitCode: exitCode ?? -1 }); });
 });
+
+const terminateProcessTree = async (child: ReturnType<typeof spawn>): Promise<void> => {
+  if (child.pid === undefined) return;
+  if (process.platform !== 'win32') {
+    child.kill('SIGKILL');
+    return;
+  }
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
+  const taskkill = spawn(`${systemRoot}\\System32\\taskkill.exe`, ['/PID', String(child.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      taskkill.kill();
+      resolve();
+    }, 5_000);
+    const complete = (): void => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    taskkill.once('error', complete);
+    taskkill.once('close', complete);
+  });
+};

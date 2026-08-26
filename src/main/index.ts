@@ -25,7 +25,7 @@ import { FccRuntimeManager } from './services/runtime/FccRuntimeManager';
 import { LocalFccGateway } from './services/runtime/LocalFccGateway';
 import { WorkerSessionService } from './services/WorkerSessionService';
 import { RunReviewService } from './services/RunReviewService';
-import { AdapterReviewerRunner, ReviewIntegrationService } from './services/ReviewIntegrationService';
+import { AdapterReviewerRunner, ReviewIntegrationArtifactCleaner, ReviewIntegrationService } from './services/ReviewIntegrationService';
 import { RunIntegrationReviewRepository } from './persistence/repositories/RunIntegrationReviewRepository';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
@@ -125,6 +125,8 @@ void app.whenReady().then(() => {
   });
 
   const runReviews = new RunReviewService(runs, workspaces);
+  const integrationReviews = new RunIntegrationReviewRepository(database);
+  const reviewArtifacts = new ReviewIntegrationArtifactCleaner(integrationReviews, workspaces, join(app.getPath('userData'), 'worktrees'));
   const runService = new RunService(
     runs,
     tasks,
@@ -134,6 +136,8 @@ void app.whenReady().then(() => {
     { agentId: 'claude-code', modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs: 90 * 60_000 },
     processSupervisor,
     settings,
+    undefined,
+    reviewArtifacts,
   );
   const workerService = new WorkerSessionService(
     workers,
@@ -142,7 +146,7 @@ void app.whenReady().then(() => {
     new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]]),
   );
   const reviewService = runReviews;
-  const reviewIntegration = new ReviewIntegrationService(runs, workspaces, new RunIntegrationReviewRepository(database), new AdapterReviewerRunner(new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]])), reviewService, join(app.getPath('userData'), 'worktrees'), settings);
+  const reviewIntegration = new ReviewIntegrationService(runs, workspaces, integrationReviews, new AdapterReviewerRunner(new Map<string, AgentAdapter>([['claude-code', runtime.claudeCode], ['codex', runtime.codex]])), reviewService, join(app.getPath('userData'), 'worktrees'), settings);
 
   registerIpcHandlers({
     appVersion: app.getVersion(),
