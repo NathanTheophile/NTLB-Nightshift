@@ -14,5 +14,5 @@ export interface WorktreeHandle {
 export interface WorktreeService {
   createForRun(spec: WorktreeSpec): Promise<WorktreeHandle>;
   inspect(path: string): Promise<WorktreeHandle | undefined>;
-  removeAfterEvidencePersisted(path: string): Promise<void>;
+  removeAfterEvidencePersisted(path: string, repositoryRoot: string): Promise<void>;
 }

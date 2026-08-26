@@ -52,11 +52,28 @@ export class GitWorktreeService implements WorktreeService {
     return { path, baseSha: head.stdout.trim(), branchName: 'detached' };
   }
 
-  public async removeAfterEvidencePersisted(path: string): Promise<void> {
+  public async removeAfterEvidencePersisted(path: string, expectedRepositoryRoot: string): Promise<void> {
+    const repositoryRoot = resolve(expectedRepositoryRoot);
+    const expectedRoot = await this.git(repositoryRoot, ['rev-parse', '--show-toplevel']);
+    if (expectedRoot.exitCode !== 0 || resolve(expectedRoot.stdout.trim()) !== repositoryRoot) throw new Error('The expected workspace is not a Git repository root.');
+
+    if (!await pathExists(path)) {
+      const pruned = await this.git(repositoryRoot, ['worktree', 'prune', '--expire=now']);
+      if (pruned.exitCode !== 0) throw new Error(`Could not prune stale worktree metadata: ${pruned.stderr.trim() || pruned.stdout.trim()}`);
+      return;
+    }
+
+    const [root, commonDirectory, repositoryCommonDirectory] = await Promise.all([
+      this.git(path, ['rev-parse', '--show-toplevel']),
+      this.git(path, ['rev-parse', '--git-common-dir']),
+      this.git(repositoryRoot, ['rev-parse', '--git-common-dir']),
+    ]);
+    if (root.exitCode !== 0 || commonDirectory.exitCode !== 0 || repositoryCommonDirectory.exitCode !== 0
+      || resolve(root.stdout.trim()) !== resolve(path)
+      || resolve(path, commonDirectory.stdout.trim()) !== resolve(repositoryRoot, repositoryCommonDirectory.stdout.trim())) {
+      throw new Error(`Refusing to remove an unrecognized Planner worktree: ${path}`);
+    }
     await removeDependencyJunction(path);
-    const commonDirectory = await this.git(path, ['rev-parse', '--git-common-dir']);
-    if (commonDirectory.exitCode !== 0) throw new Error('Could not determine the source repository for this worktree.');
-    const repositoryRoot = resolve(path, commonDirectory.stdout.trim(), '..');
     const result = await this.git(repositoryRoot, ['worktree', 'remove', '--force', path]);
     if (result.exitCode !== 0) throw new Error(`Could not remove worktree: ${result.stderr.trim() || result.stdout.trim()}`);
   }
@@ -92,19 +109,18 @@ export const runGit: GitCommand = (repositoryRoot, argumentsList, options = {}) 
   let stdout = ''; let stderr = '';
   let settled = false;
   let timingOut = false;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeout: ReturnType<typeof setTimeout> | undefined = options.timeoutMs === undefined ? undefined : setTimeout(() => {
+    timingOut = true;
+    void terminateProcessTree(child).finally(() => {
+      settle({ stdout, stderr: `${stderr}${stderr ? '\n' : ''}Git command timed out after ${options.timeoutMs}ms.`, exitCode: -1 });
+    });
+  }, options.timeoutMs);
   const settle = (result: GitCommandResult): void => {
     if (settled) return;
     settled = true;
     if (timeout) clearTimeout(timeout);
     resolvePromise(result);
   };
-  timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
-    timingOut = true;
-    void terminateProcessTree(child).finally(() => {
-      settle({ stdout, stderr: `${stderr}${stderr ? '\n' : ''}Git command timed out after ${options.timeoutMs}ms.`, exitCode: -1 });
-    });
-  }, options.timeoutMs);
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => { stdout += chunk; }); child.stderr.on('data', (chunk: string) => { stderr += chunk; });
   child.once('error', (error) => {

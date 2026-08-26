@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, readdir, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Run, RunIntegrationReview, ReviewerVerdict } from '@shared/domain/entities';
 import type { RunRepository } from '../persistence/repositories/RunRepository';
@@ -28,10 +28,12 @@ export class ReviewIntegrationArtifactCleaner implements RunArtifactCleaner {
   public async removeForRuns(runs: readonly Run[]): Promise<void> {
     const reviews = this.reviews.listByRunIds(runs.map((run) => run.id)); const byRun = new Map<string, string[]>();
     for (const review of reviews) byRun.set(review.runId, [...(byRun.get(review.runId) ?? []), review.id]);
-    for (const run of runs) { const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) continue; await this.removeReviewerWorktrees(workspace.rootPath, run.id); for (const reviewId of byRun.get(run.id) ?? []) await this.removeWorktree(workspace.rootPath, join(this.storageRoot, 'integrations', reviewId)); }
+    const prunedRoots = new Set<string>();
+    for (const run of runs) { const workspace = this.workspaces.findById(run.workspaceId); if (!workspace?.isGit) continue; if (!prunedRoots.has(workspace.rootPath)) { const pruned = await this.git(workspace.rootPath, ['worktree', 'prune', '--expire=now']); if (pruned.exitCode !== 0) throw new Error(`Could not prune stale review worktree metadata: ${detail(pruned)}`); prunedRoots.add(workspace.rootPath); } await this.removeReviewerWorktrees(workspace.rootPath, run.id); for (const reviewId of byRun.get(run.id) ?? []) await this.removeWorktree(workspace.rootPath, join(this.storageRoot, 'integrations', reviewId)); }
   }
   public async removeWorktree(repositoryRoot: string, path: string): Promise<void> {
-    const root = await this.git(path, ['rev-parse', '--show-toplevel']); if (root.exitCode !== 0) return;
+    try { await lstat(path); } catch (error) { if (isMissing(error)) { const pruned = await this.git(repositoryRoot, ['worktree', 'prune', '--expire=now']); if (pruned.exitCode !== 0) throw new Error(`Could not prune stale review worktree metadata: ${detail(pruned)}`, { cause: error }); return; } throw error; }
+    const root = await this.git(path, ['rev-parse', '--show-toplevel']); if (root.exitCode !== 0) throw new Error(`Refusing to remove an unrecognized review worktree: ${path}`);
     const [worktreeCommon, repositoryCommon] = await Promise.all([this.git(path, ['rev-parse', '--git-common-dir']), this.git(repositoryRoot, ['rev-parse', '--git-common-dir'])]);
     if (worktreeCommon.exitCode !== 0 || repositoryCommon.exitCode !== 0 || resolve(root.stdout.trim()) !== resolve(path) || resolve(path, worktreeCommon.stdout.trim()) !== resolve(repositoryRoot, repositoryCommon.stdout.trim())) throw new Error(`Refusing to remove an unrecognized review worktree: ${path}`);
     const removed = await this.git(repositoryRoot, ['worktree', 'remove', '--force', path]); if (removed.exitCode !== 0) throw new Error(`Could not remove review worktree: ${detail(removed)}`);

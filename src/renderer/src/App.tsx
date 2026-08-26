@@ -59,12 +59,19 @@ export const App = () => {
     [activeWorkspaceId, workspaces],
   );
   const selectedRun = runItems.find((run) => run.id === selectedRunId) ?? null;
-  useEffect(() => {
-    const request = ++navigationRequest.current;
+  const refreshRunNavigation = useCallback((): void => {
     if (!activeWorkspace) return;
-    const load = (): void => { void window.nightShift.runs.navigation(activeWorkspace.id).then((items) => { if (navigationRequest.current !== request) return; setRunItems(items); setSelectedRunId((current) => items.some((item) => item.id === current) ? current : items[0]?.id ?? null); }).catch((error: unknown) => { if (navigationRequest.current === request) reportError(messageFrom(error)); }); };
-    load(); const timer = window.setInterval(load, 1_500); return () => window.clearInterval(timer);
+    const request = ++navigationRequest.current;
+    void window.nightShift.runs.navigation(activeWorkspace.id).then((items) => {
+      if (navigationRequest.current !== request) return;
+      setRunItems(items);
+      setSelectedRunId((current) => items.some((item) => item.id === current) ? current : items[0]?.id ?? null);
+    }).catch((error: unknown) => { if (navigationRequest.current === request) reportError(messageFrom(error)); });
   }, [activeWorkspace, reportError]);
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    refreshRunNavigation(); const timer = window.setInterval(refreshRunNavigation, 1_500); return () => window.clearInterval(timer);
+  }, [activeWorkspace, refreshRunNavigation]);
 
   const openWorkspace = async (): Promise<void> => {
     try {
@@ -179,7 +186,7 @@ export const App = () => {
               onAction={() => void openWorkspace()}
             />
           ) : activeSection === 'planner' ? (
-            <PlannerView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
+            <PlannerView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} onTaskDeleted={refreshRunNavigation} />
           ) : activeSection === 'workers' ? (
             <WorkersView key={activeWorkspace.id} workspace={activeWorkspace} onError={reportError} />
           ) : activeSection === 'runs' ? (

@@ -36,7 +36,7 @@ describe('Night queue hardening', () => {
     const source = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: 'agent', resolvedModelId: 'model' }); runs.setPreparation(source.id, 'base', 'C:\\worktrees\\source'); runs.setStatus(source.id, 'completed'); runs.setCandidateCommit(source.id, 'nightshift/run/source', 'candidate'); runs.setCandidatePublished(source.id, 'origin'); runs.appendEvent(source.id, 'terminal', {});
     const followUp = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: 'agent', resolvedModelId: 'model', sourceRunId: source.id }); runs.setPreparation(followUp.id, 'candidate', 'C:\\worktrees\\follow'); runs.setStatus(followUp.id, 'failed'); runs.appendEvent(followUp.id, 'terminal', {});
     const artifactRuns: string[][] = [];
-    const service = new RunService(runs, tasks, workspaces, worktrees, new Map(), { agentId: 'agent', modelId: 'model', timeoutMs: 1_000 }, undefined, undefined, undefined, { removeForRuns: async (history) => { artifactRuns.push(history.map((run) => run.id)); } });
+    const service = new RunService(runs, tasks, workspaces, worktrees, new Map(), { agentId: 'agent', modelId: 'model', timeoutMs: 1_000 }, undefined, undefined, undefined, { removeForRuns: (history) => { artifactRuns.push(history.map((run) => run.id)); return Promise.resolve(); } });
     await service.purgePlannerTask(task.id);
     expect(removed).toEqual(['C:\\worktrees\\source', 'C:\\worktrees\\follow']); expect(artifactRuns).toEqual([[source.id, followUp.id]]); expect(tasks.findById(task.id)).toBeUndefined(); expect(runs.listByTask(task.id)).toEqual([]); expect(database.queryAll('SELECT * FROM run_events')).toEqual([]); database.close();
   });

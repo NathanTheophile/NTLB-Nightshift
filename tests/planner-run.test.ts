@@ -441,7 +441,7 @@ class DelayedWorktreeService implements WorktreeService {
   public constructor(private readonly inner: WorktreeService) {}
   public async createForRun(spec: WorktreeSpec): Promise<WorktreeHandle> { this.started.resolve(); await this.gate.promise; return this.inner.createForRun(spec); }
   public inspect(path: string): Promise<WorktreeHandle | undefined> { return this.inner.inspect(path); }
-  public removeAfterEvidencePersisted(path: string): Promise<void> { return this.inner.removeAfterEvidencePersisted(path); }
+  public removeAfterEvidencePersisted(path: string, repositoryRoot: string): Promise<void> { return this.inner.removeAfterEvidencePersisted(path, repositoryRoot); }
   public waitForStart(): Promise<void> { return this.started.promise; } public release(): void { this.gate.resolve(); }
 }
 const deferred = <T>(): { promise: Promise<T>; resolve: (value: T) => void } => { let resolve!: (value: T) => void; return { promise: new Promise<T>((next) => { resolve = next; }), resolve }; };

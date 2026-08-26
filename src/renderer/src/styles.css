@@ -706,7 +706,7 @@ textarea:focus-visible {
   height: 13px;
 }
 
-.archive-task {
+.delete-task {
   width: 18px;
   height: 18px;
   padding: 2px;
@@ -715,7 +715,7 @@ textarea:focus-visible {
   cursor: pointer;
 }
 
-.archive-task img {
+.delete-task img {
   width: 13px;
   height: 13px;
 }

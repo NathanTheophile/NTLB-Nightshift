@@ -118,12 +118,30 @@ export class RunService implements RunServiceContract {
     }
     await this.artifacts?.removeForRuns(history);
     for (const run of history) {
-      if (run.worktreePath) await this.worktrees.removeAfterEvidencePersisted(run.worktreePath);
+      const workspace = this.workspaces.findById(run.workspaceId);
+      if (run.worktreePath && workspace?.isGit) await this.worktrees.removeAfterEvidencePersisted(run.worktreePath, workspace.rootPath);
+      await this.removeOwnedCandidateBranch(run, workspace?.rootPath);
     }
     this.tasks.transaction(() => {
       this.runs.deleteTaskHistory(taskId);
       this.tasks.deleteAfterRunPurge(taskId);
     });
+  }
+  private async removeOwnedCandidateBranch(run: Run, repositoryRoot: string | undefined): Promise<void> {
+    if (!repositoryRoot || !run.worktreePath || !run.candidateBranchName || !run.candidateCommitSha
+      || run.candidateBranchName !== candidateBranchForRunName(basename(run.worktreePath))) return;
+    const ref = `refs/heads/${run.candidateBranchName}`;
+    const [head, message] = await Promise.all([
+      runGit(repositoryRoot, ['rev-parse', '--verify', ref]),
+      runGit(repositoryRoot, ['log', '-1', '--format=%B', ref]),
+    ]);
+    if (head.exitCode !== 0) return;
+    if (head.stdout.trim() !== run.candidateCommitSha || message.stdout.trim() !== `NightShift candidate: ${run.id}`) {
+      console.warn(`[Planner] Preserving unproven local candidate branch ${run.candidateBranchName}.`);
+      return;
+    }
+    const removed = await runGit(repositoryRoot, ['branch', '-D', run.candidateBranchName]);
+    if (removed.exitCode !== 0) console.warn(`[Planner] Could not remove local candidate branch ${run.candidateBranchName}: ${removed.stderr.trim() || removed.stdout.trim()}`);
   }
   // Scheduling work is intentionally synchronous until the launched Run promises yield.
   // eslint-disable-next-line @typescript-eslint/require-await

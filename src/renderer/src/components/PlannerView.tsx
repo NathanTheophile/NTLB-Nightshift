@@ -9,6 +9,7 @@ import { EmptyState } from './EmptyState';
 interface PlannerViewProps {
   workspace: Workspace;
   onError: (message: string) => void;
+  onTaskDeleted: () => void;
 }
 
 const statusLabels: Readonly<Record<PlannerTaskStatus, string>> = {
@@ -20,7 +21,7 @@ const statusLabels: Readonly<Record<PlannerTaskStatus, string>> = {
   cancelled: 'Annulée',
 };
 
-export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
+export const PlannerView = ({ workspace, onError, onTaskDeleted }: PlannerViewProps) => {
   const [tasks, setTasks] = useState<PlannerTask[]>([]);
   const [prompt, setPrompt] = useState('');
   const [priority, setPriority] = useState(1);
@@ -87,14 +88,6 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
     }
   };
 
-  const archiveTask = async (taskId: string): Promise<void> => {
-    try {
-      await window.nightShift.planner.archiveTask(taskId);
-      setTasks((current) => current.filter(({ id }) => id !== taskId));
-    } catch (error) {
-      onError(messageFrom(error));
-    }
-  };
   const updateConcurrency = async (value: 1 | 2 | 3 | 4): Promise<void> => {
     try { setConcurrency((await window.nightShift.planner.setConcurrency(value)).limit); }
     catch (error) { onError(messageFrom(error)); }
@@ -107,18 +100,19 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
     try { setQueuePaused((await window.nightShift.planner.setQueueState(!queuePaused)).paused); }
     catch (error) { onError(messageFrom(error)); }
   };
-  const deleteQueuedTask = async (taskId: string): Promise<void> => {
-    try { await window.nightShift.planner.deleteQueuedTask(taskId); setTasks((current) => current.filter((task) => task.id !== taskId)); }
-    catch (error) { onError(messageFrom(error)); }
-  };
   const updatePriority = async (taskId: string, value: number): Promise<void> => {
     try { const task = await window.nightShift.planner.updateQueuedPriority(taskId, value); setTasks((current) => current.map((item) => item.id === task.id ? task : item).sort(compareTasks)); }
     catch (error) { onError(messageFrom(error)); }
   };
-  const purgeTask = async (task: PlannerTask): Promise<void> => {
+  const deleteTask = async (task: PlannerTask): Promise<void> => {
     const candidate = task.status === 'completed' ? ' Les branches Candidate distantes éventuelles sont conservées.' : '';
-    if (!window.confirm(`Supprimer définitivement cette tâche et tout son historique local de Runs ?${candidate}`)) return;
-    try { await window.nightShift.planner.purgeTask(task.id); setTasks((current) => current.filter((item) => item.id !== task.id)); }
+    if (task.status !== 'queued' && !window.confirm(`Supprimer définitivement cette tâche et tout son historique local de Runs ?${candidate}`)) return;
+    try {
+      if (task.status === 'queued') await window.nightShift.planner.deleteQueuedTask(task.id);
+      else await window.nightShift.planner.purgeTask(task.id);
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      onTaskDeleted();
+    }
     catch (error) { onError(messageFrom(error)); }
   };
   const counts = tasks.reduce<Record<string, number>>((value, task) => ({ ...value, [task.status]: (value[task.status] ?? 0) + 1 }), {});
@@ -158,13 +152,15 @@ export const PlannerView = ({ workspace, onError }: PlannerViewProps) => {
                 <img src={assets.timeIcon} alt="" />
               </span>
             </div>
-            {task.status === 'completed' && (
-              <button className="archive-task" type="button" title="Archiver la tâche" onClick={() => void archiveTask(task.id)}>
+            {task.status === 'queued' || (['completed', 'failed', 'blocked', 'cancelled'] as PlannerTaskStatus[]).includes(task.status) ? (
+              <button className="delete-task" type="button" title="Supprimer définitivement la tâche" aria-label={`Supprimer ${task.title}`} onClick={() => void deleteTask(task)}>
+                <img src={assets.deleteButton} alt="" />
+              </button>
+            ) : (
+              <button className="delete-task" type="button" title="Annulez le Run puis attendez son état terminal avant de supprimer cette tâche." aria-label={`Suppression indisponible pour ${task.title}`} disabled>
                 <img src={assets.deleteButton} alt="" />
               </button>
             )}
-            {task.status === 'queued' && <button className="archive-task" type="button" title="Supprimer la tâche en attente" onClick={() => void deleteQueuedTask(task.id)}>Supprimer</button>}
-            {(['completed', 'failed', 'blocked', 'cancelled'] as PlannerTaskStatus[]).includes(task.status) && <button className="archive-task" type="button" title="Supprimer définitivement l'historique local" onClick={() => void purgeTask(task)}>Delete</button>}
           </article>
         ))}
       </div>
