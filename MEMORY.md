@@ -1,1 +1,1 @@
-- [Fix UI-01: add 0.5px gap between workspace tabs](fix-ui-01.md — Added gap property to .workspace-tabs-scroll to create visual separation)
+- [Add formatDuration utility](src/shared/domain/formatDuration.md) — Added a pure utility for formatting elapsed durations with tests and removed obsolete Delegated Leader tests
