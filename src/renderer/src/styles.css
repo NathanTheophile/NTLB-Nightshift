@@ -603,6 +603,44 @@ textarea:focus-visible {
 .run-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: 18px 0 10px; }.run-tabs button { border-radius: 7px 7px 0 0; background: #43334f; color: #aaa1ad; font-size: 15px; }.run-tabs .is-active { border-color: #9363bd; background: #8b60ba; color: #fff; }.run-warning { padding: 8px; border-left: 2px solid #b48a42; background: #332c20; color: #d6bc85; font-size: 12px; }.run-exports { margin-top: 14px; }.run-prompt-result h2 { margin: 18px 0 8px; color: #c9b5d8; font-size: 13px; font-weight: 500; }.run-prompt-result pre, .run-diff { margin: 0; padding: 14px; overflow: auto; background: #161619; color: #c7becb; font: 12px/1.5 Consolas, monospace; white-space: pre-wrap; }.run-changes { display: grid; }.run-changes > button { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 9px; min-height: 35px; padding: 7px 11px; border: 0; border-bottom: 1px solid #343137; background: #232323; color: #beb8c1; text-align: left; cursor: pointer; }.run-changes > button.is-selected { background: rgba(139, 96, 186, .17); }.file-kind { color: #72a4c6; font-size: 10px; }.file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.file-stats i { color: #42bd7a; font-style: normal; }.file-stats em { color: #e45e5e; font-style: normal; }.run-changes small { grid-column: 2 / -1; color: #b89251; }.run-diff { min-height: 360px; margin-top: 10px; }
 .run-events { border-top: 1px solid #303033; padding-top: 12px; font-size: 11px; }.run-events p { color: #918894; overflow-wrap: anywhere; }.run-events time { color: #6b6470; }
 
+/* Execution Summary Styles */
+.run-execution-summary {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  background: #232323;
+  border-radius: 5px;
+  margin: 0 0 16px;
+  border-top: 1px solid #39343d;
+  border-bottom: 1px solid #39343d;
+}
+
+.summary-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.summary-label {
+  font-size: 11px;
+  color: #858087;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.summary-value {
+  font-size: 14px;
+  color: #eeeaf0;
+  font-weight: 450;
+  word-break: break-word;
+}
+
 .planner-list {
   min-height: 0;
   padding: 30px clamp(28px, 8vw, 164px) 12px;

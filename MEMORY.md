@@ -1,1 +1,1 @@
-- [Fix UI-01: add 0.5px gap between workspace tabs](fix-ui-01.md — Added gap property to .workspace-tabs-scroll to create visual separation)
+- [Improved Run Detail UX with Execution Summary](src/renderer/src/components/RunDetailCard.tsx.md) — Added concise human-readable execution summary to RunDetailCard showing task title, status, agent/model, duration, validation status, candidate state, and reviewer info
