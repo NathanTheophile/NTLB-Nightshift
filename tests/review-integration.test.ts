@@ -121,8 +121,8 @@ describe('ReviewIntegrationService integration', () => {
       const fixture = await setup();
       try { const run = await fixture.publishedCandidate('conflict', 'candidate\n', 'shared.txt'); await fixture.advanceDev('dev\n', 'shared.txt'); const result = await fixture.service.integrate((await fixture.requestPass(run.id)).id); expect(result).toMatchObject({ integrationStatus: 'needs_attention' }); expect(result.integrationFailureReason).toContain('Merge conflict'); } finally { await fixture.dispose(); }
     })(), (async () => {
-      const fixture = await setup({ validator: { validate: () => Promise.resolve({ passed: false, evidence: 'lint failed' }) } });
-      try { const result = await fixture.service.integrate((await fixture.requestPass((await fixture.publishedCandidate('invalid')).id)).id); expect(result).toMatchObject({ integrationStatus: 'needs_attention', integrationValidation: 'lint failed' }); } finally { await fixture.dispose(); }
+      const fixture = await setup({ validator: { validate: () => Promise.resolve({ passed: false, evidence: 'lint failed', commands: [{ sequence: 0, command: 'npm run lint', status: 'failed' as const, startedAt: '2026-08-27T00:00:00.000Z', finishedAt: '2026-08-27T00:00:01.000Z', exitCode: 2, output: 'useful stderr', outputTruncated: false }] }) } });
+      try { const result = await fixture.service.integrate((await fixture.requestPass((await fixture.publishedCandidate('invalid')).id)).id); expect(result).toMatchObject({ integrationStatus: 'needs_attention', integrationValidation: 'lint failed' }); expect(result.integrationValidationCommands).toMatchObject([{ command: 'npm run lint', status: 'failed', exitCode: 2, output: 'useful stderr' }]); } finally { await fixture.dispose(); }
     })()]);
   });
 

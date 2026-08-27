@@ -85,6 +85,19 @@ export interface RunIntegrationReview {
   integrationValidation: string | null;
   integrationFailureReason: string | null;
   integratedAt: IsoTimestamp | null;
+  integrationValidationCommands: IntegrationValidationCommand[];
+}
+export interface IntegrationValidationCommand {
+  id: EntityId;
+  reviewId: EntityId;
+  sequence: number;
+  command: string;
+  status: ValidationCommandStatus;
+  startedAt: IsoTimestamp;
+  finishedAt: IsoTimestamp | null;
+  exitCode: number | null;
+  output: string;
+  outputTruncated: boolean;
 }
 
 export interface Run {

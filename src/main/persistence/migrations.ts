@@ -298,4 +298,24 @@ export const migrations: readonly Migration[] = [
       UPDATE runs SET execution_mode = 'single_agent' WHERE execution_mode = 'delegated_leader';
     `,
   },
+  {
+    version: 12,
+    name: 'integration_validation_command_evidence',
+    sql: `
+      CREATE TABLE run_integration_validation_commands (
+        id TEXT PRIMARY KEY,
+        review_id TEXT NOT NULL REFERENCES run_integration_reviews(id) ON DELETE RESTRICT,
+        sequence INTEGER NOT NULL CHECK (sequence >= 0),
+        command TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'passed', 'failed', 'interrupted')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        exit_code INTEGER,
+        output TEXT NOT NULL DEFAULT '',
+        output_truncated INTEGER NOT NULL DEFAULT 0 CHECK (output_truncated IN (0, 1)),
+        UNIQUE(review_id, sequence)
+      );
+      CREATE INDEX run_integration_validation_commands_review_idx ON run_integration_validation_commands(review_id, sequence);
+    `,
+  },
 ];
