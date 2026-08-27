@@ -208,6 +208,54 @@ beforeAll(async () => {
 });
 
 describe('ReviewIntegrationService automatic progression', () => {
+  it('retries a needs-attention Candidate with the same SHA against current dev and preserves history', async () => {
+    let passes = false;
+    const fixture = await setup({ validator: { validate: () => Promise.resolve(passes ? { passed: true, evidence: 'retry passed' } : { passed: false, evidence: 'integrated-tree failure' }) } });
+    try {
+      const run = await fixture.publishedCandidate('explicit-retry');
+      fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate');
+      await fixture.service.resumeAutomaticWork();
+      const first = fixture.reviews.latest(run.id)!;
+      const candidateSha = run.candidateCommitSha;
+      expect(first.integrationStatus).toBe('needs_attention');
+      const currentDev = await fixture.advanceDev('current dev');
+      passes = true;
+      const retried = await fixture.service.retryIntegration(run.id);
+      const history = fixture.reviews.listByRunIds([run.id]);
+      expect(history).toHaveLength(2);
+      expect(history.find((value) => value.id === first.id)).toMatchObject({ integrationStatus: 'needs_attention', integrationValidation: 'integrated-tree failure' });
+      expect(run.candidateCommitSha).toBe(candidateSha);
+      expect(history.map((value) => value.candidateSha)).toEqual([candidateSha, candidateSha]);
+      expect(retried).toMatchObject({ integrationStatus: 'integrated', candidateSha, targetDevSha: currentDev });
+      expect(await fixture.remoteRef('dev')).toBe(retried.integrationCommitSha);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('serializes explicit retries through the workspace integration queue', async () => {
+    let phase: 'failing' | 'passing' = 'failing'; let active = 0; let maximum = 0; let blocked = false; let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fixture = await setup({ validator: { validate: async () => { if (phase === 'failing') return { passed: false, evidence: 'initial failure' }; active += 1; maximum = Math.max(maximum, active); if (!blocked) { blocked = true; await gate; } active -= 1; return { passed: true, evidence: 'retry passed' }; } } });
+    try {
+      const first = await fixture.publishedCandidate('explicit-serial-first'); const second = await fixture.publishedCandidate('explicit-serial-second');
+      fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'); await fixture.service.resumeAutomaticWork();
+      expect(fixture.reviews.latest(first.id)?.integrationStatus).toBe('needs_attention'); expect(fixture.reviews.latest(second.id)?.integrationStatus).toBe('needs_attention');
+      phase = 'passing'; const processing = Promise.all([fixture.service.retryIntegration(first.id), fixture.service.retryIntegration(second.id)]);
+      for (let attempt = 0; !blocked && attempt < 100; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(maximum).toBe(1); release?.(); const [firstRetry, secondRetry] = await processing;
+      expect(firstRetry.integrationStatus).toBe('integrated'); expect(secondRetry.integrationStatus).toBe('integrated'); expect(maximum).toBe(1);
+    } finally { release?.(); await fixture.dispose(); }
+  }, 20_000);
+
+  it('does not retry an already integrated Candidate', async () => {
+    const fixture = await setup();
+    try {
+      const run = await fixture.publishedCandidate('explicit-retry-integrated');
+      await fixture.service.integrate((await fixture.requestPass(run.id)).id);
+      await expect(fixture.service.retryIntegration(run.id)).rejects.toThrow('Integrated Candidates cannot be retried.');
+      expect(fixture.reviews.listByRunIds([run.id])).toHaveLength(1);
+    } finally { await fixture.dispose(); }
+  });
+
   it('keeps candidate_only manual', async () => {
     const fixture = await setup();
     try {

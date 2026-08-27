@@ -58,6 +58,7 @@ const api: NightShiftApi = {
     reviewIntegration: (runId) => invoke(IPC_CHANNELS.runsReviewIntegration, { runId }),
     requestReview: (runId) => invoke(IPC_CHANNELS.runsRequestReview, { runId }),
     integrateReview: (reviewId) => invoke(IPC_CHANNELS.runsIntegrateReview, { reviewId }),
+    retryIntegration: (runId) => invoke(IPC_CHANNELS.runsRetryIntegration, { runId }),
     getCandidateProgression: (workspaceId) => invoke(IPC_CHANNELS.runsGetCandidateProgression, { workspaceId }),
     setCandidateProgression: (workspaceId, mode) => invoke(IPC_CHANNELS.runsSetCandidateProgression, { workspaceId, mode }),
   },

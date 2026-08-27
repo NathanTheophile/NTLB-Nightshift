@@ -51,22 +51,48 @@ export class ReviewIntegrationArtifactCleaner implements RunArtifactCleaner {
 
 export class ReviewIntegrationService {
   private readonly artifacts: ReviewIntegrationArtifactCleaner;
-  private readonly automaticQueues = new Map<string, { operation: Promise<void>; dirty: boolean }>();
+  private readonly automaticQueues = new Map<string, { operation: Promise<void>; dirty: boolean; retries: Array<{ runId: string; resolve: () => void; reject: (error: unknown) => void }> }>();
   public constructor(private readonly runs: RunRepository, private readonly workspaces: WorkspaceRepository, private readonly reviews: RunIntegrationReviewRepository, private readonly reviewer: ReviewerRunner, private readonly reviewReader: RunReviewService, private readonly storageRoot: string, private readonly settings?: SettingsRepository, private readonly validator: IntegrationValidator = new SupervisedIntegrationValidator(), private readonly git: GitCommand = runGit) { this.artifacts = new ReviewIntegrationArtifactCleaner(reviews, workspaces, storageRoot, git); }
   public latest(runId: string): RunIntegrationReview | undefined { return this.reviews.latest(runId); }
   public getCandidateProgressionMode(workspaceId: string): CandidateProgressionMode { const value = this.settings?.get<CandidateProgressionMode>(candidateProgressionKey(workspaceId)); return value === 'auto_review' || value === 'auto_review_integrate' ? value : 'candidate_only'; }
   public setCandidateProgressionMode(workspaceId: string, mode: CandidateProgressionMode): CandidateProgressionMode { if (!this.workspaces.findById(workspaceId)) throw new Error('Workspace is unavailable.'); if (!['candidate_only', 'auto_review', 'auto_review_integrate'].includes(mode)) throw new Error('Unknown candidate progression mode.'); this.settings?.set(candidateProgressionKey(workspaceId), mode); if (mode !== 'candidate_only') void this.enqueueAutomatic(workspaceId); return mode; }
   public onCandidatePublished(run: Run): void { if (this.getCandidateProgressionMode(run.workspaceId) !== 'candidate_only') void this.enqueueAutomatic(run.workspaceId); }
   public async resumeAutomaticWork(): Promise<void> { await Promise.all(this.workspaces.list().filter((workspace) => this.getCandidateProgressionMode(workspace.id) !== 'candidate_only').map((workspace) => this.enqueueAutomatic(workspace.id))); }
+  public async retryIntegration(runId: string): Promise<RunIntegrationReview> {
+    const run = this.runs.findRequired(runId); this.gate(run);
+    const latest = this.reviews.latest(runId);
+    if (this.reviews.listByRunIds([runId]).some((review) => review.integrationStatus === 'integrated')) throw new Error('Integrated Candidates cannot be retried.');
+    if (!latest || latest.integrationStatus !== 'needs_attention') throw new Error('Only a Candidate whose latest integration needs attention may be retried.');
+    await this.enqueueRetry(run.workspaceId, runId);
+    return this.reviews.latest(runId) ?? latest;
+  }
+  private enqueueRetry(workspaceId: string, runId: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const active = this.automaticQueues.get(workspaceId);
+      if (active) { active.retries.push({ runId, resolve, reject }); active.dirty = true; return; }
+      const state: { operation: Promise<void>; dirty: boolean; retries: Array<{ runId: string; resolve: () => void; reject: (error: unknown) => void }> } = { operation: Promise.resolve(), dirty: false, retries: [{ runId, resolve, reject }] };
+      state.operation = (async () => {
+        do { state.dirty = false; while (state.retries.length) { const request = state.retries.shift()!; try { await this.drainRetry(request.runId); request.resolve(); } catch (error) { request.reject(error); } } await this.drainAutomatic(workspaceId); } while (state.dirty || state.retries.length);
+      })().catch((error: unknown) => console.error(`[Integration queue] ${workspaceId} stopped.`, error)).finally(() => this.automaticQueues.delete(workspaceId));
+      this.automaticQueues.set(workspaceId, state);
+    });
+  }
   private enqueueAutomatic(workspaceId: string): Promise<void> {
     const active = this.automaticQueues.get(workspaceId);
     if (active) { active.dirty = true; return active.operation; }
-    const state: { operation: Promise<void>; dirty: boolean } = { operation: Promise.resolve(), dirty: false };
+    const state: { operation: Promise<void>; dirty: boolean; retries: Array<{ runId: string; resolve: () => void; reject: (error: unknown) => void }> } = { operation: Promise.resolve(), dirty: false, retries: [] };
     state.operation = (async () => {
-      do { state.dirty = false; await this.drainAutomatic(workspaceId); } while (state.dirty);
+      do { state.dirty = false; while (state.retries.length) { const request = state.retries.shift()!; try { await this.drainRetry(request.runId); request.resolve(); } catch (error) { request.reject(error); } } await this.drainAutomatic(workspaceId); } while (state.dirty || state.retries.length);
     })().catch((error: unknown) => console.error(`[Integration queue] ${workspaceId} stopped.`, error)).finally(() => this.automaticQueues.delete(workspaceId));
     this.automaticQueues.set(workspaceId, state);
     return state.operation;
+  }
+  private async drainRetry(runId: string): Promise<void> {
+    const run = this.runs.findRequired(runId); this.gate(run);
+    const latest = this.reviews.latest(runId);
+    if (latest?.integrationStatus === 'integrated') throw new Error('Integrated Candidates cannot be retried.');
+    if (!latest || latest.integrationStatus !== 'needs_attention') throw new Error('Retry is no longer available for this Candidate.');
+    await this.automaticIntegrate(run, undefined);
   }
   private async drainAutomatic(workspaceId: string): Promise<void> {
     const mode = this.getCandidateProgressionMode(workspaceId); if (mode === 'candidate_only') return;

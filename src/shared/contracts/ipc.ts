@@ -108,6 +108,7 @@ export const IPC_CHANNELS = {
   runsReviewIntegration: 'runs:review-integration',
   runsRequestReview: 'runs:request-review',
   runsIntegrateReview: 'runs:integrate-review',
+  runsRetryIntegration: 'runs:retry-integration',
   runsGetCandidateProgression: 'runs:get-candidate-progression',
   runsSetCandidateProgression: 'runs:set-candidate-progression',
   workersList: 'workers:list',
@@ -158,6 +159,7 @@ export interface IpcContract {
   [IPC_CHANNELS.runsReviewIntegration]: { request: { runId: string }; response: RunIntegrationReview | null };
   [IPC_CHANNELS.runsRequestReview]: { request: { runId: string }; response: RunIntegrationReview };
   [IPC_CHANNELS.runsIntegrateReview]: { request: { reviewId: string }; response: RunIntegrationReview };
+  [IPC_CHANNELS.runsRetryIntegration]: { request: { runId: string }; response: RunIntegrationReview };
   [IPC_CHANNELS.runsGetCandidateProgression]: { request: { workspaceId: string }; response: CandidateProgressionSettings };
   [IPC_CHANNELS.runsSetCandidateProgression]: { request: CandidateProgressionSettings; response: CandidateProgressionSettings };
   [IPC_CHANNELS.workersList]: { request: { workspaceId: string }; response: WorkerConversation[] };
@@ -218,6 +220,7 @@ export interface NightShiftApi {
     reviewIntegration: (runId: string) => Promise<RunIntegrationReview | null>;
     requestReview: (runId: string) => Promise<RunIntegrationReview>;
     integrateReview: (reviewId: string) => Promise<RunIntegrationReview>;
+    retryIntegration: (runId: string) => Promise<RunIntegrationReview>;
     getCandidateProgression: (workspaceId: string) => Promise<CandidateProgressionSettings>;
     setCandidateProgression: (workspaceId: string, mode: CandidateProgressionMode) => Promise<CandidateProgressionSettings>;
   };
