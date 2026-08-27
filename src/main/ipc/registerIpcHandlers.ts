@@ -9,6 +9,7 @@ import {
   type ListRunEventsRequest,
   type ListWorkspaceEntriesRequest,
   type LaunchWorkspaceToolRequest,
+  type LaunchFileRequest,
   type WorkspaceTabState,
   type CreateWorkerInput,
 } from '@shared/contracts/ipc';
@@ -165,6 +166,11 @@ export const registerIpcHandlers = (services: IpcServices): void => {
     return services.launcher.openWorkspaceTool(request.workspaceId, request.tool);
   });
 
+  handle(IPC_CHANNELS.launcherOpenFile, async (request) => {
+    assertOpenFileRequest(request);
+    return services.launcher.openFileInIde(request.workspaceId, request.filePath);
+  });
+
   handle(IPC_CHANNELS.launcherConfigureIde, (_, event) =>
     services.launcher.configureIde(requireWindow(event)),
   );
@@ -273,6 +279,12 @@ function assertLaunchRequest(value: unknown): asserts value is LaunchWorkspaceTo
   assertRecord(value);
   assertNonEmptyString(value.workspaceId, 'workspaceId');
   assertWorkspaceTool(value.tool);
+}
+
+function assertOpenFileRequest(value: unknown): asserts value is LaunchFileRequest {
+  assertRecord(value);
+  assertNonEmptyString(value.workspaceId, 'workspaceId');
+  assertNonEmptyString(value.filePath, 'filePath');
 }
 
 function assertWorkspaceTool(value: unknown): asserts value is 'terminal' | 'explorer' | 'ide' { if (value !== 'terminal' && value !== 'explorer' && value !== 'ide') throw new Error('Unsupported workspace tool.'); }

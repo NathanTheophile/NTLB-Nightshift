@@ -62,6 +62,11 @@ export interface LaunchWorkspaceToolRequest {
   tool: WorkspaceTool;
 }
 
+export interface LaunchFileRequest {
+  workspaceId: string;
+  filePath: string;
+}
+
 export interface LaunchResult {
   status: 'launched' | 'configuration_required';
   message: string;
@@ -117,6 +122,7 @@ export const IPC_CHANNELS = {
   workersStop: 'workers:stop',
   workersSelectionCatalog: 'workers:selection-catalog',
   launcherOpenWorkspaceTool: 'launcher:open-workspace-tool',
+  launcherOpenFile: 'launcher:open-file',
   launcherConfigureIde: 'launcher:configure-ide',
   windowMinimize: 'window:minimize',
   windowToggleMaximize: 'window:toggle-maximize',
@@ -167,6 +173,7 @@ export interface IpcContract {
   [IPC_CHANNELS.workersStop]: { request: { workerId: string }; response: WorkerConversation };
   [IPC_CHANNELS.workersSelectionCatalog]: { request: undefined; response: WorkerSelectionCatalog };
   [IPC_CHANNELS.launcherOpenWorkspaceTool]: { request: LaunchWorkspaceToolRequest; response: LaunchResult };
+  [IPC_CHANNELS.launcherOpenFile]: { request: LaunchFileRequest; response: LaunchResult };
   [IPC_CHANNELS.launcherConfigureIde]: { request: undefined; response: LauncherConfiguration };
   [IPC_CHANNELS.windowMinimize]: { request: undefined; response: undefined };
   [IPC_CHANNELS.windowToggleMaximize]: { request: undefined; response: undefined };
@@ -231,6 +238,7 @@ export interface NightShiftApi {
   };
   launcher: {
     openWorkspaceTool: (request: LaunchWorkspaceToolRequest) => Promise<LaunchResult>;
+    openFile: (request: LaunchFileRequest) => Promise<LaunchResult>;
     configureIde: () => Promise<LauncherConfiguration>;
   };
   windowControls: {

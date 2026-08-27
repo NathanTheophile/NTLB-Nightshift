@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { basename, extname } from 'node:path';
+import { basename, extname, isAbsolute, resolve, relative, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { dialog, shell, type BrowserWindow } from 'electron';
@@ -72,6 +72,25 @@ export class LauncherService {
     return this.openPath(await this.reviews.resolveValidWorktree(runId), tool, 'Run worktree');
   }
 
+  public async openFileInIde(workspaceId: string, filePath: string): Promise<LaunchResult> {
+    const workspace = this.workspaces.findById(workspaceId);
+    if (!workspace) {
+      throw new Error('A valid workspace is required to launch a project tool.');
+    }
+
+    // Validate that the file path is within the workspace
+    const absolutePath = this.resolveFilePath(workspace.rootPath, filePath);
+
+    const ide = this.settings.get<IdeSetting>(ideSettingKey);
+    if (!ide) {
+      return { status: 'configuration_required', message: 'Choose an IDE executable first.' };
+    }
+
+    await assertWindowsExecutable(ide.executablePath);
+    await launchDetached(ide.executablePath, [absolutePath], workspace.rootPath);
+    return { status: 'launched', message: `File opened in ${ide.displayName}.` };
+  }
+
   private async openPath(path: string, tool: WorkspaceTool, label: string): Promise<LaunchResult> {
     if (tool === 'explorer') {
       const error = await shell.openPath(path);
@@ -98,6 +117,20 @@ export class LauncherService {
     await assertWindowsExecutable(ide.executablePath);
     await launchDetached(ide.executablePath, [path], path);
     return { status: 'launched', message: `${label} opened in ${ide.displayName}.` };
+  }
+
+  private resolveFilePath(rootPath: string, filePath: string): string {
+    if (isAbsolute(filePath)) {
+      throw new Error('File paths must be relative to the workspace.');
+    }
+
+    const candidate = resolve(rootPath, filePath);
+    assertPathWithin(rootPath, candidate);
+
+    // Note: We don't call realpath here because the file might not exist yet
+    // (though in our use case from Workspace Explorer, it should exist)
+    // We just need to ensure it's within the workspace for security
+    return candidate;
   }
 }
 
@@ -138,4 +171,13 @@ const assertWindowsExecutable = async (executablePath: string): Promise<void> =>
   if (!executableStat.isFile()) {
     throw new Error('The configured IDE executable no longer exists.');
   }
+};
+
+// Utility function to check if a path is within a root path
+const assertPathWithin = (rootPath: string, candidatePath: string): void => {
+  const pathFromRoot = relative(rootPath, candidatePath);
+  if (pathFromRoot === '' || (!pathFromRoot.startsWith(`..${sep}`) && pathFromRoot !== '..' && !isAbsolute(pathFromRoot))) {
+    return;
+  }
+  throw new Error('The requested path is outside the selected workspace.');
 };

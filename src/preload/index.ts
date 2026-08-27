@@ -71,6 +71,7 @@ const api: NightShiftApi = {
   },
   launcher: {
     openWorkspaceTool: (request) => invoke(IPC_CHANNELS.launcherOpenWorkspaceTool, request),
+    openFile: (request) => invoke(IPC_CHANNELS.launcherOpenFile, request),
     configureIde: () => invoke(IPC_CHANNELS.launcherConfigureIde, undefined),
   },
   windowControls: {

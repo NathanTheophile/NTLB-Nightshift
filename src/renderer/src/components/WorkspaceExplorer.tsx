@@ -124,15 +124,27 @@ const ExplorerEntry = ({
   const [expanded, setExpanded] = useState(false);
   const isDirectory = entry.kind === 'directory';
 
+  const handleClick = () => {
+    if (isDirectory) {
+      setExpanded((value) => !value);
+    } else {
+      window.nightShift.launcher.openFile({
+        workspaceId,
+        filePath: entry.relativePath,
+      }).catch((error) => {
+        onError(error instanceof Error ? error.message : 'Failed to open file');
+      });
+    }
+  };
+
   return (
     <div className="tree-entry-wrap">
       <button
         className={`tree-entry tree-entry-${entry.kind}`}
         type="button"
         style={{ paddingLeft: `${12 + depth * 16}px` }}
-        disabled={!isDirectory}
         title={entry.relativePath}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={handleClick}
       >
         {isDirectory && <span className={`tree-chevron ${expanded ? 'is-expanded' : ''}`}>›</span>}
         {isDirectory && <img src={assets.folderIcon} alt="" />}
