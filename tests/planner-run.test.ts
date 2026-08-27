@@ -13,7 +13,7 @@ import { RunRepository } from '../src/main/persistence/repositories/RunRepositor
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
 import { GitWorktreeService } from '../src/main/services/GitWorktreeService';
 import type { GitCommand, GitCommandResult } from '../src/main/services/GitWorktreeService';
-import { RunService } from '../src/main/services/RunService';
+import { RunService, type RunTiming } from '../src/main/services/RunService';
 import type { AgentAdapter, AgentExecutionHandle, AgentExecutionResult, RunStartSpec } from '../src/main/services/contracts/AgentAdapter';
 import type { WorktreeHandle, WorktreeService, WorktreeSpec } from '../src/main/services/contracts/WorktreeService';
 import type { AgentCapabilities, AgentDescriptor, Run } from '../src/shared/domain/entities';
@@ -140,6 +140,43 @@ describe('Planner Run vertical slice', () => {
       const completed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'completed' ? run : undefined), 8_000);
       expect(adapter.starts).toBe(2); expect(adapter.workingDirectories[0]).toBe(adapter.workingDirectories[1]); expect(service.validationCommands(completed.id)).toHaveLength(1);
       expect(service.events(completed.id, 'activity').events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['agent_execution_failed', 'agent_recovery_started', 'agent_recovery_completed']));
+    } finally { await fixture.dispose(); }
+  });
+
+  it('retries transient provider failures in the same worktree without consuming initial recovery', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new ProviderRetryAdapter(['transient', 'transient', 'completed'], true); const service = fixture.service(adapter, 10_000, fixture.fakeWorktreeService, false, immediateTiming);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Retry provider.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const completed = await waitFor(() => service.list(fixture.workspace.id)[0]?.status === 'completed' ? true : undefined, 2_000);
+      const run = service.list(fixture.workspace.id)[0]!;
+      expect(completed).toBe(true); expect(adapter.starts).toBe(3); expect([...new Set(adapter.workingDirectories)]).toHaveLength(1); expect(adapter.externalSessionIds).toEqual([null, 'provider-session-1', 'provider-session-2']);
+      expect(adapter.prompts[1]).toBe(providerContinuationPrompt); expect(adapter.prompts[2]).toBe(providerContinuationPrompt);
+      expect(service.events(run.id, 'activity').events.map((event) => event.eventType)).toEqual(expect.arrayContaining(['provider_retry_scheduled', 'provider_retry_started', 'provider_retry_completed']));
+      expect(service.events(run.id, 'activity').events.map((event) => event.eventType)).not.toContain('agent_recovery_started');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('fails provider-unavailable after two transient retries without code recovery', async () => {
+    const fixture = await setup();
+    try {
+      const adapter = new ProviderRetryAdapter(['transient', 'transient', 'transient']); const service = fixture.service(adapter, 10_000, fixture.fakeWorktreeService, false, immediateTiming);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Provider unavailable.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const failed = await waitFor(() => service.find(service.list(fixture.workspace.id)[0]!.id).then((run) => run?.status === 'failed' ? run : undefined), 2_000);
+      expect(adapter.starts).toBe(3); expect(failed.failureReason).toContain('Provider unavailable or rate-limited');
+      expect(service.events(failed.id, 'activity').events.map((event) => event.eventType)).toContain('provider_retry_exhausted');
+      expect(service.events(failed.id, 'activity').events.map((event) => event.eventType)).not.toContain('agent_recovery_started');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('cancels a transient-provider backoff immediately', async () => {
+    const fixture = await setup();
+    try {
+      const timing = new PendingTiming(); const adapter = new ProviderRetryAdapter(['transient', 'completed']); const service = fixture.service(adapter, 10_000, fixture.fakeWorktreeService, false, timing);
+      fixture.tasks.create({ workspaceId: fixture.workspace.id, prompt: 'Cancel retry.', requestedAgentId: null, requestedModelId: null, priority: 1 }); service.schedule();
+      const run = await waitFor(() => service.list(fixture.workspace.id)[0]); await timing.waitForSleep(); await service.requestCancellation(run.id);
+      await waitFor(() => service.find(run.id).then((value) => value?.status === 'cancelled' ? value : undefined), 2_000);
+      expect(adapter.starts).toBe(1);
     } finally { await fixture.dispose(); }
   });
 
@@ -553,8 +590,8 @@ const setup = async (realGit = false) => {
   const database = new DatabaseService(':memory:'); const workspaces = new WorkspaceRepository(database); const tasks = new PlannerTaskRepository(database); const runs = new RunRepository(database); const workspace = workspaces.addOrTouch(repository, 'repository', true);
   const worktreeService = new GitWorktreeService(worktrees); const fakeWorktrees = new LightweightWorktreeService(worktrees); const git = fakeGit(repository);
   const services: RunService[] = [];
-  const service = (adapter: AgentAdapter, timeoutMs: number, selectedWorktrees: WorktreeService = fakeWorktrees, useRealGit = false): RunService => {
-    const value = new RunService(runs, tasks, workspaces, selectedWorktrees, new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs }, undefined, undefined, undefined, undefined, useRealGit ? undefined : git);
+  const service = (adapter: AgentAdapter, timeoutMs: number, selectedWorktrees: WorktreeService = fakeWorktrees, useRealGit = false, timing?: RunTiming): RunService => {
+    const value = new RunService(runs, tasks, workspaces, selectedWorktrees, new Map([[adapter.id, adapter]]), { agentId: adapter.id, modelId: 'nvidia_nim/nvidia/nemotron-3-super-120b-a12b', timeoutMs }, undefined, undefined, undefined, undefined, useRealGit ? undefined : git, timing);
     services.push(value);
     return value;
   };
@@ -632,6 +669,24 @@ class CorrectionHangingAdapter extends CompletingAdapter {
 }
 class FailingAdapter extends CompletingAdapter {
   public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> { this.starts += 1; this.workingDirectories.push(spec.workingDirectory); return Promise.resolve({ handleId: randomUUID(), externalSessionId: null, events: [], completion: Promise.resolve({ handleId: 'failed', succeeded: false, failureReason: 'Expected failure.', exitCode: 1, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' }) }); }
+}
+const providerContinuationPrompt = 'The previous provider request was interrupted by a transient service failure. Continue the same task from the existing worktree. Preserve completed work, do not redo unrelated work, and do not commit or push.';
+const immediateTiming: RunTiming = { sleep: () => Promise.resolve() };
+class PendingTiming implements RunTiming {
+  private readonly started = deferred<void>();
+  public sleep(): Promise<void> { this.started.resolve(); return new Promise(() => undefined); }
+  public waitForSleep(): Promise<void> { return this.started.promise; }
+}
+class ProviderRetryAdapter extends CompletingAdapter {
+  public readonly externalSessionIds: Array<string | null> = []; public readonly prompts: string[] = [];
+  public constructor(private readonly outcomes: Array<'transient' | 'completed'>, private readonly resumable = false) { super(); }
+  public override capabilities = (): AgentCapabilities => ({ ...capabilities, resume: this.resumable });
+  public override startRun(spec: RunStartSpec): Promise<AgentExecutionHandle> {
+    this.starts += 1; this.workingDirectories.push(spec.workingDirectory); this.externalSessionIds.push(spec.externalSessionId ?? null); this.prompts.push(spec.prompt);
+    const externalSessionId = `provider-session-${this.starts}`;
+    const succeeded = this.outcomes[this.starts - 1] === 'completed';
+    return Promise.resolve({ handleId: externalSessionId, externalSessionId, events: [], completion: Promise.resolve({ handleId: externalSessionId, succeeded, failureReason: succeeded ? null : 'HTTP 429 rate_limit', exitCode: succeeded ? 0 : 1, signal: null, externalSessionId, events: [], terminalEvent: null, stderr: '' }) });
+  }
 }
 class InitialRecoveryAdapter extends CompletingAdapter {
   public readonly externalSessionIds: Array<string | null> = []; public readonly prompts: string[] = []; public cancelled = 0; private resolve?: (result: AgentExecutionResult) => void;

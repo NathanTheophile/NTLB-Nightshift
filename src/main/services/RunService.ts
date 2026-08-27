@@ -20,11 +20,13 @@ const terminalStatuses = new Set<RunStatus>(['completed', 'failed', 'blocked', '
 const CANDIDATE_GIT_TIMEOUT_MS = 3 * 60_000;
 const MAX_AUTOMATIC_CORRECTIONS = 2;
 const MAX_INITIAL_AGENT_RECOVERIES = 1;
+const PROVIDER_RETRY_DELAYS_MS = [60_000, 120_000] as const;
 const MAX_CORRECTION_EVIDENCE_CHARS = 12_000;
 const MAX_CORRECTION_DIAGNOSTIC_BYTES = 4 * 1024;
 const candidateGitOptions = (timeoutMs: number) => ({ timeoutMs, environment: { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } });
 
 export interface PlannerRunDefaults { agentId: string; modelId: string; timeoutMs: number; }
+export interface RunTiming { sleep(milliseconds: number, signal: AbortSignal): Promise<void>; }
 export class RunService implements RunServiceContract {
   private readonly active = new Map<string, { cancel: () => Promise<void>; timedOut: boolean }>();
   private readonly publishing = new Map<string, Promise<Run>>();
@@ -35,7 +37,7 @@ export class RunService implements RunServiceContract {
   private configuredTimeoutMs: number | undefined;
   private scheduling = false;
   private scheduleRequested = false;
-  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly candidateGitTimeoutMs = CANDIDATE_GIT_TIMEOUT_MS, private readonly artifacts?: RunArtifactCleaner, private readonly git: GitCommand = runGit) { this.validation = new ProjectValidationService(runs, validationSupervisor, git); }
+  public constructor(private readonly runs: RunRepository, private readonly tasks: PlannerTaskRepository, private readonly workspaces: WorkspaceRepository, private readonly worktrees: WorktreeService, private readonly adapters: ReadonlyMap<string, AgentAdapter>, private readonly defaults: PlannerRunDefaults, validationSupervisor: ProcessSupervisor = new WindowsProcessSupervisor(), private readonly settings?: SettingsRepository, private readonly candidateGitTimeoutMs = CANDIDATE_GIT_TIMEOUT_MS, private readonly artifacts?: RunArtifactCleaner, private readonly git: GitCommand = runGit, private readonly timing: RunTiming = systemTiming) { this.validation = new ProjectValidationService(runs, validationSupervisor, git); }
   public createAttempt(spec: { taskId: string; workspaceId: string; resolvedAgentId: string; resolvedModelId: string; baseSha: string }): Promise<Run> {
     const run = this.runs.create(spec);
     return Promise.resolve(this.runs.setBaseSha(run.id, spec.baseSha));
@@ -212,10 +214,13 @@ export class RunService implements RunServiceContract {
       this.runs.setStatus(run.id, 'running', { started_at: new Date().toISOString() }); this.runs.appendEvent(run.id, 'running', {});
       const deadline = Date.now() + runTimeoutMs;
       const effectivePrompt = followUpPrompt(task.prompt, run.followUpPrompt);
+      const singleExecution = run.executionMode === 'single_agent'
+        ? await this.executeSingleWithProviderRetries(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, deadline)
+        : undefined;
       let result = run.executionMode === 'sequential_batch'
         ? await this.executeBatch(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, batchSteps, deadline)
-        : await this.executeSingle(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, deadline);
-      if (run.executionMode === 'single_agent' && !result.succeeded) result = await this.recoverInitialAgentFailure(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, result, deadline);
+        : singleExecution!.result;
+      if (run.executionMode === 'single_agent' && !result.succeeded && !singleExecution!.providerRetriesExhausted) result = await this.recoverInitialAgentFailure(run.id, workspace.id, worktree.path, modelId, adapter, effectivePrompt, result, deadline);
       const current = this.runs.findRequired(run.id); const cancelled = current.status === 'cancel_requested';
       let status: RunStatus = current.status === 'timed_out' ? 'timed_out' : cancelled ? 'cancelled' : result.succeeded ? 'completed' : 'failed';
       if (status === 'completed') {
@@ -347,6 +352,51 @@ export class RunService implements RunServiceContract {
     if (this.runs.findRequired(runId).status === 'cancel_requested') await adapter.cancel(handle.handleId);
     return this.waitWithTimeout(runId, handle.completion, Math.max(0, deadline - Date.now()));
   }
+  private async executeSingleWithProviderRetries(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, originalPrompt: string, deadline: number): Promise<{ result: AgentExecutionResult; providerRetriesExhausted: boolean }> {
+    let result = await this.executeSingle(runId, workspaceId, workingDirectory, modelId, adapter, originalPrompt, deadline);
+    let externalSessionId = result.externalSessionId;
+    for (let retryIndex = 0; retryIndex < PROVIDER_RETRY_DELAYS_MS.length && isTransientProviderFailure(result); retryIndex += 1) {
+      const attempt = retryIndex + 1;
+      const delayMs = PROVIDER_RETRY_DELAYS_MS[retryIndex]!;
+      const run = this.runs.findRequired(runId);
+      if (run.status === 'cancel_requested' || run.status === 'timed_out') return { result, providerRetriesExhausted: false };
+      if (Date.now() >= deadline) { await this.timeoutRun(runId, Promise.resolve()); return { result, providerRetriesExhausted: false }; }
+      this.runs.appendEvent(runId, 'provider_retry_scheduled', { attempt, delayMs, reason: transientProviderFailureKind(result) });
+      const waitOutcome = await this.waitForProviderRetry(runId, Math.min(delayMs, Math.max(0, deadline - Date.now())), deadline);
+      if (waitOutcome !== 'elapsed') return { result: waitOutcome === 'cancelled' ? cancelledResult() : result, providerRetriesExhausted: false };
+      const priorExternalSessionId = externalSessionId;
+      const resumed = Boolean(priorExternalSessionId && adapter.capabilities().resume);
+      this.runs.appendEvent(runId, 'provider_retry_started', { attempt, resumed });
+      result = await this.executeSingle(runId, workspaceId, workingDirectory, modelId, adapter, providerRetryPrompt(), deadline, resumed ? priorExternalSessionId : null);
+      externalSessionId = result.externalSessionId ?? externalSessionId;
+      if (result.succeeded) {
+        this.runs.appendEvent(runId, 'provider_retry_completed', { attempt, resumed });
+        return { result: { ...result, externalSessionId }, providerRetriesExhausted: false };
+      }
+    }
+    if (isTransientProviderFailure(result)) {
+      this.runs.appendEvent(runId, 'provider_retry_exhausted', { retries: PROVIDER_RETRY_DELAYS_MS.length, reason: transientProviderFailureKind(result) });
+      return { result: { ...result, failureReason: `Provider unavailable or rate-limited after ${PROVIDER_RETRY_DELAYS_MS.length} retry attempts. Please try the Run again later.` }, providerRetriesExhausted: true };
+    }
+    return { result, providerRetriesExhausted: false };
+  }
+  private async waitForProviderRetry(runId: string, delayMs: number, deadline: number): Promise<'elapsed' | 'cancelled' | 'timed_out'> {
+    let interrupt!: (outcome: 'cancelled' | 'timed_out') => void;
+    const interrupted = new Promise<'cancelled' | 'timed_out'>((resolve) => { interrupt = resolve; });
+    const abortController = new AbortController();
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    this.active.set(runId, { timedOut: false, cancel: () => { interrupt('cancelled'); abortController.abort(); return Promise.resolve(); } });
+    try {
+      const remainingMs = Math.max(0, deadline - Date.now());
+      const deadlineReached = new Promise<'timed_out'>((resolve) => { deadlineTimer = setTimeout(() => resolve('timed_out'), remainingMs); });
+      const outcome = await Promise.race([this.timing.sleep(delayMs, abortController.signal).then(() => 'elapsed' as const), interrupted, deadlineReached]);
+      if (outcome === 'timed_out') await this.timeoutRun(runId, Promise.resolve());
+      return outcome;
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      this.active.delete(runId);
+    }
+  }
   private async recoverInitialAgentFailure(runId: string, workspaceId: string, workingDirectory: string, modelId: string, adapter: AgentAdapter, originalPrompt: string, initialResult: AgentExecutionResult, deadline: number): Promise<AgentExecutionResult> {
     this.runs.appendEvent(runId, 'agent_execution_failed', executionFailureEvidence(adapter.id, initialResult));
     const run = this.runs.findRequired(runId);
@@ -476,6 +526,21 @@ export class RunService implements RunServiceContract {
 }
 const taskStatus = (status: RunStatus): 'completed' | 'failed' | 'blocked' | 'cancelled' => status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'timed_out' ? 'failed' : status === 'failed' ? 'failed' : 'blocked';
 class RunTimeoutError extends Error {}
+const systemTiming: RunTiming = { sleep: (milliseconds, signal) => new Promise((resolve) => {
+  const timer = setTimeout(resolve, milliseconds);
+  signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+}) };
+const transientProviderFailurePatterns: ReadonlyArray<[RegExp, string]> = [
+  [/\b(?:http\s*)?429\b/i, 'http_429'],
+  [/\brate[ _-]?limit(?:ed)?\b/i, 'rate_limit'],
+  [/\breadtimeout\b/i, 'read_timeout'],
+  [/\btimeouterror\b/i, 'timeout_error'],
+  [/\bsslwantreaderror\b/i, 'ssl_want_read'],
+  [/\bprovider\b[^\n]{0,80}\bdeadline\s+exceeded\b/i, 'provider_deadline'],
+];
+const transientProviderFailureText = (result: AgentExecutionResult): string => [result.failureReason, result.stderr, result.terminalEvent?.raw, result.terminalEvent ? safeJson(result.terminalEvent.parsed) : ''].filter(Boolean).join('\n');
+const transientProviderFailureKind = (result: AgentExecutionResult): string | null => transientProviderFailurePatterns.find(([pattern]) => pattern.test(transientProviderFailureText(result)))?.[1] ?? null;
+const isTransientProviderFailure = (result: AgentExecutionResult): boolean => transientProviderFailureKind(result) !== null;
 const cancelledResult = (): AgentExecutionResult => ({ handleId: 'cancelled-before-step', succeeded: false, failureReason: 'Cancelled by user.', exitCode: null, signal: null, externalSessionId: null, events: [], terminalEvent: null, stderr: '' });
 const batchTerminalEvent = (status: RunStatus): string => status === 'completed' ? 'batch_completed' : status === 'cancelled' ? 'batch_cancelled' : status === 'timed_out' ? 'batch_timed_out' : 'batch_failed';
 const inspectGit = async (path: string, git: GitCommand = runGit): Promise<{ head: string | null; status: string; diffStat: string }> => { const [head, status, diffStat] = await Promise.all([git(path, ['rev-parse', 'HEAD']), git(path, ['status', '--porcelain=v1']), git(path, ['diff', '--stat'])]); return { head: head.exitCode === 0 ? head.stdout.trim() : null, status: status.stdout, diffStat: diffStat.stdout }; };
@@ -545,6 +610,7 @@ Inspect the existing implementation and finish or repair it so it is ready for N
 
 Preserve correct existing work. Remain strictly within the original task scope. Do not reset or discard the worktree. Do not commit or push. Run only targeted checks useful while repairing the implementation. NightShift will perform final deterministic validation.`;
 };
+const providerRetryPrompt = (): string => 'The previous provider request was interrupted by a transient service failure. Continue the same task from the existing worktree. Preserve completed work, do not redo unrelated work, and do not commit or push.';
 const gitFailure = (prefix: string, result: GitCommandResult): string => `${prefix} ${result.stderr.trim() || result.stdout.trim() || 'Git returned an error.'}`;
 const normalizeConcurrency = (value: unknown): number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4 ? value : 2;
 const normalizeTimeout = (value: unknown, fallback: number): number => typeof value === 'number' && [30, 60, 90, 120].includes(value / 60_000) ? value : fallback;
