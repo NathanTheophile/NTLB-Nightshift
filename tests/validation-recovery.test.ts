@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DatabaseService } from '../src/main/persistence/DatabaseService';
 import { PlannerTaskRepository } from '../src/main/persistence/repositories/PlannerTaskRepository';
@@ -12,6 +12,7 @@ import { RunRepository } from '../src/main/persistence/repositories/RunRepositor
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
 import { ProjectValidationService } from '../src/main/services/ProjectValidationService';
 import { RunService } from '../src/main/services/RunService';
+import type { ProcessSupervisor, SupervisedProcessResult, SupervisedProcessSnapshot, SupervisedProcessSpec } from '../src/main/services/contracts/ProcessSupervisor';
 import { WindowsProcessSupervisor } from '../src/main/services/WindowsProcessSupervisor';
 
 const exec = promisify(execFile);
@@ -56,21 +57,26 @@ describe('project-default validation', () => {
   });
 
   it('terminates a hanging owned validation command at its deadline and does not start later commands', async () => {
+    vi.useFakeTimers();
     const fixture = await setup();
     try {
-      await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node -e "setInterval(() => {}, 1000)"', lint: 'node -e "process.exit(0)"' } }));
-      const status = await new ProjectValidationService(fixture.runs, new WindowsProcessSupervisor()).validate(fixture.run.id, fixture.root, { deadline: Date.now() + 300, isCancellationRequested: () => false });
-      expect(status).toBe('interrupted'); expect(fixture.runs.validationCommands(fixture.run.id).map((command) => command.command)).toEqual(['npm run typecheck']); expect(fixture.runs.validationCommands(fixture.run.id)[0]!.status).toBe('interrupted');
-    } finally { await fixture.dispose(); }
-  }, 15_000);
+      await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node -e "process.exit(0)"', lint: 'node -e "process.exit(0)"' } }));
+      const supervisor = new HangingSupervisor();
+      const validation = new ProjectValidationService(fixture.runs, supervisor).validate(fixture.run.id, fixture.root, { deadline: Date.now() + 1, isCancellationRequested: () => false });
+      await supervisor.waitUntilWaiting();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await validation).toBe('interrupted'); expect(supervisor.cancelledExecutionIds).toEqual(supervisor.startedExecutionIds); expect(fixture.runs.findRequired(fixture.run.id).validationStatus).toBe('interrupted'); expect(fixture.runs.validationCommands(fixture.run.id).map((command) => command.command)).toEqual(['npm run typecheck']); expect(fixture.runs.validationCommands(fixture.run.id)[0]!.status).toBe('interrupted');
+    } finally { await fixture.dispose(); vi.useRealTimers(); }
+  });
 
   it('terminates a hanging validation command when cancellation is requested', async () => {
     const fixture = await setup();
     try {
       let cancelled = false;
-      await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node -e "setInterval(() => {}, 1000)"', lint: 'node -e "process.exit(0)"' } }));
-      const status = await new ProjectValidationService(fixture.runs, new WindowsProcessSupervisor()).validate(fixture.run.id, fixture.root, { deadline: Date.now() + 30_000, isCancellationRequested: () => cancelled, onProcessStarted: (cancel) => { setTimeout(() => { cancelled = true; void cancel(); }, 100); } });
-      expect(status).toBe('interrupted'); expect(fixture.runs.validationCommands(fixture.run.id).map((command) => command.command)).toEqual(['npm run typecheck']);
+      await writeFile(join(fixture.root, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node -e "process.exit(0)"', lint: 'node -e "process.exit(0)"' } }));
+      const supervisor = new HangingSupervisor();
+      const status = await new ProjectValidationService(fixture.runs, supervisor).validate(fixture.run.id, fixture.root, { deadline: Date.now() + 30_000, isCancellationRequested: () => cancelled, onProcessStarted: (cancel) => { cancelled = true; void cancel(); } });
+      expect(status).toBe('interrupted'); expect(supervisor.cancelledExecutionIds).toEqual(supervisor.startedExecutionIds); expect(fixture.runs.findRequired(fixture.run.id).validationStatus).toBe('interrupted'); expect(fixture.runs.validationCommands(fixture.run.id).map((command) => command.command)).toEqual(['npm run typecheck']); expect(fixture.runs.validationCommands(fixture.run.id)[0]!.status).toBe('interrupted');
     } finally { await fixture.dispose(); }
   });
 });
@@ -93,3 +99,41 @@ const setup = async () => {
   return { root, runs, tasks, workspace, task, run, service, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
 };
 const validationOptions = () => ({ deadline: Date.now() + 30_000, isCancellationRequested: () => false });
+
+class HangingSupervisor implements ProcessSupervisor {
+  public readonly startedExecutionIds: string[] = [];
+  public readonly cancelledExecutionIds: string[] = [];
+  private readonly completionPromises = new Map<string, Promise<SupervisedProcessResult>>();
+  private readonly completionResolvers = new Map<string, (result: SupervisedProcessResult) => void>();
+  private readonly specs = new Map<string, SupervisedProcessSpec>();
+  private resolveWaiting: (() => void) | null = null;
+  private readonly waiting = new Promise<void>((resolve) => { this.resolveWaiting = resolve; });
+
+  public start(spec: SupervisedProcessSpec): Promise<SupervisedProcessSnapshot> {
+    this.startedExecutionIds.push(spec.executionId);
+    this.specs.set(spec.executionId, spec);
+    this.completionPromises.set(spec.executionId, new Promise((resolve) => this.completionResolvers.set(spec.executionId, resolve)));
+    return Promise.resolve(runningSnapshot(spec.executionId));
+  }
+
+  public snapshot(executionId: string): SupervisedProcessSnapshot | undefined {
+    return this.specs.has(executionId) ? runningSnapshot(executionId) : undefined;
+  }
+
+  public subscribe(): () => void { return () => undefined; }
+
+  public waitForCompletion(executionId: string): Promise<SupervisedProcessResult> {
+    this.resolveWaiting?.();
+    return this.completionPromises.get(executionId)!;
+  }
+
+  public cancelOwnedTree(executionId: string): Promise<void> {
+    this.cancelledExecutionIds.push(executionId);
+    this.completionResolvers.get(executionId)?.({ ...runningSnapshot(executionId), state: 'exited', cancellationRequested: true, finishedAt: '2026-08-27T00:00:00.000Z', exitCode: null, signal: 'SIGTERM', stdout: '', stderr: '' });
+    return Promise.resolve();
+  }
+
+  public waitUntilWaiting(): Promise<void> { return this.waiting; }
+}
+
+const runningSnapshot = (executionId: string): SupervisedProcessSnapshot => ({ executionId, processId: 1, state: 'running', startedAt: '2026-08-27T00:00:00.000Z', lastOutputAt: null, finishedAt: null, cancellationRequested: false, exitCode: null, failureReason: null });
