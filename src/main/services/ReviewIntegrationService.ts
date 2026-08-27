@@ -50,14 +50,23 @@ export class ReviewIntegrationArtifactCleaner implements RunArtifactCleaner {
 
 export class ReviewIntegrationService {
   private readonly artifacts: ReviewIntegrationArtifactCleaner;
-  private readonly automaticQueues = new Map<string, Promise<void>>();
+  private readonly automaticQueues = new Map<string, { operation: Promise<void>; dirty: boolean }>();
   public constructor(private readonly runs: RunRepository, private readonly workspaces: WorkspaceRepository, private readonly reviews: RunIntegrationReviewRepository, private readonly reviewer: ReviewerRunner, private readonly reviewReader: RunReviewService, private readonly storageRoot: string, private readonly settings?: SettingsRepository, private readonly validator: IntegrationValidator = new SupervisedIntegrationValidator(), private readonly git: GitCommand = runGit) { this.artifacts = new ReviewIntegrationArtifactCleaner(reviews, workspaces, storageRoot, git); }
   public latest(runId: string): RunIntegrationReview | undefined { return this.reviews.latest(runId); }
   public getCandidateProgressionMode(workspaceId: string): CandidateProgressionMode { const value = this.settings?.get<CandidateProgressionMode>(candidateProgressionKey(workspaceId)); return value === 'auto_review' || value === 'auto_review_integrate' ? value : 'candidate_only'; }
   public setCandidateProgressionMode(workspaceId: string, mode: CandidateProgressionMode): CandidateProgressionMode { if (!this.workspaces.findById(workspaceId)) throw new Error('Workspace is unavailable.'); if (!['candidate_only', 'auto_review', 'auto_review_integrate'].includes(mode)) throw new Error('Unknown candidate progression mode.'); this.settings?.set(candidateProgressionKey(workspaceId), mode); if (mode !== 'candidate_only') void this.enqueueAutomatic(workspaceId); return mode; }
   public onCandidatePublished(run: Run): void { if (this.getCandidateProgressionMode(run.workspaceId) !== 'candidate_only') void this.enqueueAutomatic(run.workspaceId); }
   public async resumeAutomaticWork(): Promise<void> { await Promise.all(this.workspaces.list().filter((workspace) => this.getCandidateProgressionMode(workspace.id) !== 'candidate_only').map((workspace) => this.enqueueAutomatic(workspace.id))); }
-  private enqueueAutomatic(workspaceId: string): Promise<void> { const active = this.automaticQueues.get(workspaceId); if (active) return active; const operation = this.drainAutomatic(workspaceId).catch((error: unknown) => console.error(`[Integration queue] ${workspaceId} stopped.`, error)).finally(() => this.automaticQueues.delete(workspaceId)); this.automaticQueues.set(workspaceId, operation); return operation; }
+  private enqueueAutomatic(workspaceId: string): Promise<void> {
+    const active = this.automaticQueues.get(workspaceId);
+    if (active) { active.dirty = true; return active.operation; }
+    const state: { operation: Promise<void>; dirty: boolean } = { operation: Promise.resolve(), dirty: false };
+    state.operation = (async () => {
+      do { state.dirty = false; await this.drainAutomatic(workspaceId); } while (state.dirty);
+    })().catch((error: unknown) => console.error(`[Integration queue] ${workspaceId} stopped.`, error)).finally(() => this.automaticQueues.delete(workspaceId));
+    this.automaticQueues.set(workspaceId, state);
+    return state.operation;
+  }
   private async drainAutomatic(workspaceId: string): Promise<void> {
     const mode = this.getCandidateProgressionMode(workspaceId); if (mode === 'candidate_only') return;
     for (const run of this.runs.publishedValidated(workspaceId)) {

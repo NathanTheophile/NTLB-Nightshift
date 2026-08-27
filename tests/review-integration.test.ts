@@ -236,6 +236,17 @@ describe('ReviewIntegrationService automatic progression', () => {
     } finally { await fixture.dispose(); }
   });
 
+  it('drains a Candidate published while an automatic integration is active', async () => {
+    let active = 0; let maximum = 0; let release: (() => void) | undefined; const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fixture = await setup({ validator: { validate: async () => { active += 1; maximum = Math.max(maximum, active); if (maximum === 1) await gate; active -= 1; return { passed: true, evidence: 'ok' }; } } });
+    try {
+      const first = await fixture.publishedCandidate('wake-first'); fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'); const processing = fixture.service.resumeAutomaticWork();
+      for (let attempt = 0; maximum === 0 && attempt < 100; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+      const second = await fixture.publishedCandidate('wake-second'); fixture.service.onCandidatePublished(second); release?.(); await processing;
+      expect(fixture.reviews.latest(first.id)?.integrationStatus).toBe('integrated'); expect(fixture.reviews.latest(second.id)?.integrationStatus).toBe('integrated'); expect(maximum).toBe(1);
+    } finally { await fixture.dispose(); }
+  });
+
   it('continues after a reviewer failure', async () => {
     const fixture = await setup();
     try {
