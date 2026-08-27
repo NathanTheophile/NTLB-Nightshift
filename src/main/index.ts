@@ -174,6 +174,8 @@ void app.whenReady().then(() => {
     launcher: new LauncherService(settings, workspaces, reviewService),
   });
   runService.recoverInterruptedRuns();
+  runService.setCandidatePublishedHandler((run) => reviewIntegration.onCandidatePublished(run));
+  void reviewIntegration.resumeAutomaticWork();
   runService.schedule();
 
   createWindow();

@@ -13,7 +13,7 @@ import { RunRepository } from '../src/main/persistence/repositories/RunRepositor
 import { SettingsRepository } from '../src/main/persistence/repositories/SettingsRepository';
 import { WorkspaceRepository } from '../src/main/persistence/repositories/WorkspaceRepository';
 import { runGit, type GitCommand } from '../src/main/services/GitWorktreeService';
-import { ReviewIntegrationService, SupervisedIntegrationValidator, devBaseKey, resolveEffectiveDevBase, type IntegrationValidator, type ReviewerRunner } from '../src/main/services/ReviewIntegrationService';
+import { ReviewIntegrationService, SupervisedIntegrationValidator, candidateProgressionKey, devBaseKey, resolveEffectiveDevBase, type IntegrationValidator, type ReviewerRunner } from '../src/main/services/ReviewIntegrationService';
 import type { ProcessSupervisor, SupervisedProcessResult, SupervisedProcessSnapshot } from '../src/main/services/contracts/ProcessSupervisor';
 
 const exec = promisify(execFile);
@@ -190,6 +190,80 @@ beforeAll(async () => {
   await exec('git', ['init', templateRepository]); await exec('git', ['-C', templateRepository, 'config', 'user.email', 'test@nightshift.local']); await exec('git', ['-C', templateRepository, 'config', 'user.name', 'NightShift Test']); await exec('git', ['-C', templateRepository, 'branch', '-M', 'dev']); await writeFile(join(templateRepository, 'shared.txt'), 'base\n'); await exec('git', ['-C', templateRepository, 'add', '.']); await exec('git', ['-C', templateRepository, 'commit', '-m', 'base']); await exec('git', ['init', '--bare', templateRemote]); await exec('git', ['-C', templateRepository, 'remote', 'add', 'origin', templateRemote]); await exec('git', ['-C', templateRepository, 'push', '-u', 'origin', 'dev']); await exec('git', ['--git-dir', templateRemote, 'symbolic-ref', 'HEAD', 'refs/heads/dev']);
 });
 
+describe('ReviewIntegrationService automatic progression', () => {
+  it('keeps candidate_only manual', async () => {
+    const fixture = await setup();
+    try {
+      await fixture.publishedCandidate('manual');
+      await fixture.service.resumeAutomaticWork();
+      expect(fixture.reviewer.inputs).toHaveLength(0);
+      expect(await fixture.remoteRef('dev')).toBe(await fixture.git(['rev-parse', 'dev']).then((value) => value.stdout.trim()));
+    } finally { await fixture.dispose(); }
+  });
+
+  it('reviews without merging in auto_review mode', async () => {
+    const fixture = await setup();
+    try {
+      const before = await fixture.remoteRef('dev'); const run = await fixture.publishedCandidate('review-only');
+      fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review'); await fixture.service.resumeAutomaticWork();
+      expect(fixture.reviewer.inputs).toHaveLength(1); expect(fixture.reviews.latest(run.id)?.integrationStatus).toBe('not_started'); expect(await fixture.remoteRef('dev')).toBe(before);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('serially integrates same-base candidates and reviews each merged result', async () => {
+    const fixture = await setup();
+    try {
+      const base = (await fixture.git(['rev-parse', 'dev'])).stdout.trim();
+      const first = await fixture.publishedCandidate('auto-first', 'first\n', 'first.txt', true, base);
+      const second = await fixture.publishedCandidate('auto-second', 'second\n', 'second.txt', true, base);
+      fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'); await fixture.service.resumeAutomaticWork();
+      const firstReview = fixture.reviews.latest(first.id)!; const secondReview = fixture.reviews.latest(second.id)!;
+      expect(firstReview.integrationStatus).toBe('integrated'); expect(secondReview.integrationStatus).toBe('integrated');
+      expect(fixture.reviewer.inputs.map((input) => input.candidateSha)).toEqual([firstReview.integrationCommitSha, secondReview.integrationCommitSha]);
+      expect(fixture.reviewer.inputs[1]!.targetDevSha).toBe(firstReview.integrationCommitSha);
+      expect((await fixture.git(['rev-list', '--parents', '-n', '1', secondReview.integrationCommitSha!])).stdout.trim().split(' ')).toContain(firstReview.integrationCommitSha);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('allows only one automatic integration per workspace at a time', async () => {
+    let active = 0; let maximum = 0; let release: (() => void) | undefined; const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fixture = await setup({ validator: { validate: async () => { active += 1; maximum = Math.max(maximum, active); if (maximum === 1) await gate; active -= 1; return { passed: true, evidence: 'ok' }; } } });
+    try {
+      const base = (await fixture.git(['rev-parse', 'dev'])).stdout.trim(); await fixture.publishedCandidate('serialized-first', 'first\n', 'first.txt', true, base); await fixture.publishedCandidate('serialized-second', 'second\n', 'second.txt', true, base);
+      fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'); const processing = fixture.service.resumeAutomaticWork();
+      for (let attempt = 0; maximum === 0 && attempt < 100; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(maximum).toBe(1); release?.(); await processing; expect(maximum).toBe(1);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('continues after a reviewer failure', async () => {
+    const fixture = await setup();
+    try {
+      const failed = await fixture.publishedCandidate('review-fail'); const succeeding = await fixture.publishedCandidate('after-fail');
+      fixture.reviewer.responses = [JSON.stringify({ verdict: 'FAIL', summary: 'no', findings: 'no' }), JSON.stringify({ verdict: 'PASS', summary: 'yes', findings: 'yes' })];
+      fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'); await fixture.service.resumeAutomaticWork();
+      expect(fixture.reviews.latest(failed.id)?.integrationStatus).toBe('needs_attention'); expect(fixture.reviews.latest(succeeding.id)?.integrationStatus).toBe('integrated');
+    } finally { await fixture.dispose(); }
+  });
+
+  it('never overwrites dev after an automatic remote race', async () => {
+    const fixture = await setup({ validator: { validate: async () => { await fixture.advanceDev('external-race'); return { passed: true, evidence: 'ok' }; } } });
+    try {
+      const raced = await fixture.publishedCandidate('race-auto'); fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'); await fixture.service.resumeAutomaticWork();
+      expect(fixture.reviews.latest(raced.id)?.staleAt).toBeTruthy(); expect((await fixture.remoteRef('dev'))).not.toBe(fixture.reviews.latest(raced.id)?.integrationCommitSha);
+    } finally { await fixture.dispose(); }
+  });
+
+  it('resumes pending automatic work after service recreation', async () => {
+    const fixture = await setup();
+    try {
+      const run = await fixture.publishedCandidate('resume-auto'); fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate');
+      fixture.recreateService(); await fixture.service.resumeAutomaticWork();
+      expect(fixture.reviews.latest(run.id)?.integrationStatus).toBe('integrated');
+    } finally { await fixture.dispose(); }
+  });
+});
+
 afterAll(async () => { if (templateRoot) await rm(templateRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); });
 
 const setup = async (overrides: { validator?: IntegrationValidator; remote?: boolean } = {}) => {
@@ -200,23 +274,23 @@ const setup = async (overrides: { validator?: IntegrationValidator; remote?: boo
   const makeService = () => new ReviewIntegrationService(runs, workspaces, reviews, reviewer, { automationEvidence: () => Promise.resolve({ review: { source: 'test' } }) } as never, storage, settings, overrides.validator ?? { validate: () => Promise.resolve({ passed: true, evidence: 'ok' }) }, (path, args) => git(path, args));
   let service = makeService();
   const gitCommand = (args: readonly string[]) => runGit(repository, args);
-  const publishedCandidate = async (name: string, content = `${name}\n`, file = `${name}.txt`, restoreDev = true) => {
-    const base = settings.get<string>(devBaseKey(workspace.id)) ?? 'dev'; const branch = `candidate-${name}`;
+  const publishedCandidate = async (name: string, content = `${name}\n`, file = `${name}.txt`, restoreDev = true, baseRef?: string) => {
+    const base = baseRef ?? settings.get<string>(devBaseKey(workspace.id)) ?? 'dev'; const branch = `candidate-${name}`;
     await gitCommand(['switch', '-c', branch, base]); await writeFile(join(repository, file), content); await gitCommand(['add', file]); await gitCommand(['commit', '-m', name]); const sha = (await gitCommand(['rev-parse', 'HEAD'])).stdout.trim(); if (hasRemote) await gitCommand(['push', '-u', 'origin', branch]); if (restoreDev) await gitCommand(['switch', 'dev']);
     const task = tasks.create({ workspaceId: workspace.id, prompt: name, requestedAgentId: 'reviewer', requestedModelId: 'model', priority: 1 }); const run = runs.create({ taskId: task.id, workspaceId: workspace.id, resolvedAgentId: 'reviewer', resolvedModelId: 'model' }); runs.setCandidateCommit(run.id, branch, sha); runs.setCandidatePublished(run.id, 'origin'); return runs.setStatus(run.id, 'completed', { validation_status: 'passed' });
   };
   const advanceDev = async (content: string, file = `dev-${Date.now()}.txt`) => { await writeFile(join(repository, file), content); await gitCommand(['add', file]); await gitCommand(['commit', '-m', 'advance dev']); await gitCommand(['push', 'origin', 'dev']); return (await gitCommand(['rev-parse', 'HEAD'])).stdout.trim(); };
   const createMergeOnDev = async (candidate: string) => { await gitCommand(['merge', '--no-ff', '--no-edit', candidate]); const sha = (await gitCommand(['rev-parse', 'HEAD'])).stdout.trim(); await gitCommand(['push', 'origin', 'dev']); return sha; };
   const requestPass = async (runId: string) => { const run = runs.findRequired(runId); return reviews.create({ runId, candidateSha: run.candidateCommitSha!, targetDevSha: await resolveEffectiveDevBase(repository, workspace.id, settings), reviewerAgentId: run.resolvedAgentId, reviewerModelId: run.resolvedModelId, verdict: 'PASS', summary: 'approved', findings: 'none' }); };
-  return { repository, remote, storage, workspace, settings, reviews, reviewer, get service() { return service; }, setGit: (value: GitCommand) => { git = value; service = makeService(); }, publishedCandidate, advanceDev, createMergeOnDev, requestPass, remoteRef: async (branch: string) => (await gitCommand(['ls-remote', 'origin', `refs/heads/${branch}`])).stdout.trim().split('\t')[0] ?? '', git: gitCommand, commitAndPushCandidateReplacement: async (branch: string) => { await gitCommand(['switch', branch]); await writeFile(join(repository, 'replacement.txt'), 'replacement\n'); await gitCommand(['add', '.']); await gitCommand(['commit', '-m', 'replacement']); await gitCommand(['push', 'origin', branch, '--force']); await gitCommand(['switch', 'dev']); }, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
+  return { repository, remote, storage, workspace, settings, reviews, reviewer, get service() { return service; }, recreateService: () => { service = makeService(); }, setGit: (value: GitCommand) => { git = value; service = makeService(); }, publishedCandidate, advanceDev, createMergeOnDev, requestPass, remoteRef: async (branch: string) => (await gitCommand(['ls-remote', 'origin', `refs/heads/${branch}`])).stdout.trim().split('\t')[0] ?? '', git: gitCommand, commitAndPushCandidateReplacement: async (branch: string) => { await gitCommand(['switch', branch]); await writeFile(join(repository, 'replacement.txt'), 'replacement\n'); await gitCommand(['add', '.']); await gitCommand(['commit', '-m', 'replacement']); await gitCommand(['push', 'origin', branch, '--force']); await gitCommand(['switch', 'dev']); }, dispose: async () => { database.close(); await rm(root, { recursive: true, force: true, maxRetries: 4, retryDelay: 75 }); } };
 };
 
 const exists = async (path: string): Promise<boolean> => access(path).then(() => true, () => false);
 
 class FakeReviewer implements ReviewerRunner {
-  public raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); public error: Error | undefined; public mutate = false; public readonly inputs: Parameters<ReviewerRunner['review']>[0][] = [];
-  public reset(): void { this.raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); this.error = undefined; this.mutate = false; this.inputs.length = 0; }
-  public async review(input: Parameters<ReviewerRunner['review']>[0]): Promise<string> { this.inputs.push(input); if (this.mutate) await writeFile(join(input.worktreePath, 'mutation.txt'), 'unsafe\n'); if (this.error) throw this.error; return this.raw; }
+  public raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); public responses: string[] = []; public error: Error | undefined; public mutate = false; public readonly inputs: Parameters<ReviewerRunner['review']>[0][] = [];
+  public reset(): void { this.raw = JSON.stringify({ verdict: 'PASS', summary: 'approved', findings: 'none' }); this.responses = []; this.error = undefined; this.mutate = false; this.inputs.length = 0; }
+  public async review(input: Parameters<ReviewerRunner['review']>[0]): Promise<string> { this.inputs.push(input); if (this.mutate) await writeFile(join(input.worktreePath, 'mutation.txt'), 'unsafe\n'); if (this.error) throw this.error; return this.responses.shift() ?? this.raw; }
 }
 
 class DeadlineSupervisor implements ProcessSupervisor {

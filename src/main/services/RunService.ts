@@ -30,6 +30,7 @@ export interface RunTiming { sleep(milliseconds: number, signal: AbortSignal): P
 export class RunService implements RunServiceContract {
   private readonly active = new Map<string, { cancel: () => Promise<void>; timedOut: boolean }>();
   private readonly publishing = new Map<string, Promise<Run>>();
+  private onCandidatePublished: ((run: Run) => void) | undefined;
   private readonly followUpQueue: string[] = [];
   private readonly validation: ProjectValidationService;
   private readonly slots = new Map<string, Promise<void>>();
@@ -100,10 +101,11 @@ export class RunService implements RunServiceContract {
   }
   public publishCandidate(runId: string): Promise<Run> {
     const existing = this.publishing.get(runId); if (existing) return existing;
-    const operation = this.publishCandidateInternal(runId).finally(() => this.publishing.delete(runId));
+    const operation = this.publishCandidateInternal(runId).then((run) => { this.onCandidatePublished?.(run); return run; }).finally(() => this.publishing.delete(runId));
     this.publishing.set(runId, operation);
     return operation;
   }
+  public setCandidatePublishedHandler(handler: (run: Run) => void): void { this.onCandidatePublished = handler; }
   public createFollowUp(runId: string, prompt: string): Promise<Run> {
     const correctivePrompt = prompt.trim();
     if (!correctivePrompt) return Promise.reject(new Error('A corrective prompt is required.'));

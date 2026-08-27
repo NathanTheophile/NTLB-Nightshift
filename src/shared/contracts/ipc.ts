@@ -39,6 +39,8 @@ export interface PlannerSelectionCatalog {
 export interface PlannerConcurrencySettings { limit: 1 | 2 | 3 | 4; }
 export interface PlannerRunTimeoutSettings { timeoutMs: 1_800_000 | 3_600_000 | 5_400_000 | 7_200_000; }
 export interface PlannerQueueSettings { paused: boolean; }
+export type CandidateProgressionMode = 'candidate_only' | 'auto_review' | 'auto_review_integrate';
+export interface CandidateProgressionSettings { workspaceId: string; mode: CandidateProgressionMode; }
 
 export interface CreateWorkerInput { workspaceId: string; title: string; agentId: string; modelId: string; permissionProfile: WorkerPermissionProfile; isolationMode: IsolationMode; }
 export interface WorkerSelectionCatalog { agents: readonly AgentDescriptor[]; modelsByAgent: Readonly<Record<string, readonly ModelDescriptor[]>>; }
@@ -106,6 +108,8 @@ export const IPC_CHANNELS = {
   runsReviewIntegration: 'runs:review-integration',
   runsRequestReview: 'runs:request-review',
   runsIntegrateReview: 'runs:integrate-review',
+  runsGetCandidateProgression: 'runs:get-candidate-progression',
+  runsSetCandidateProgression: 'runs:set-candidate-progression',
   workersList: 'workers:list',
   workersCreate: 'workers:create',
   workersEvents: 'workers:events',
@@ -154,6 +158,8 @@ export interface IpcContract {
   [IPC_CHANNELS.runsReviewIntegration]: { request: { runId: string }; response: RunIntegrationReview | null };
   [IPC_CHANNELS.runsRequestReview]: { request: { runId: string }; response: RunIntegrationReview };
   [IPC_CHANNELS.runsIntegrateReview]: { request: { reviewId: string }; response: RunIntegrationReview };
+  [IPC_CHANNELS.runsGetCandidateProgression]: { request: { workspaceId: string }; response: CandidateProgressionSettings };
+  [IPC_CHANNELS.runsSetCandidateProgression]: { request: CandidateProgressionSettings; response: CandidateProgressionSettings };
   [IPC_CHANNELS.workersList]: { request: { workspaceId: string }; response: WorkerConversation[] };
   [IPC_CHANNELS.workersCreate]: { request: CreateWorkerInput; response: WorkerConversation };
   [IPC_CHANNELS.workersEvents]: { request: { workerId: string }; response: WorkerEvent[] };
@@ -212,6 +218,8 @@ export interface NightShiftApi {
     reviewIntegration: (runId: string) => Promise<RunIntegrationReview | null>;
     requestReview: (runId: string) => Promise<RunIntegrationReview>;
     integrateReview: (reviewId: string) => Promise<RunIntegrationReview>;
+    getCandidateProgression: (workspaceId: string) => Promise<CandidateProgressionSettings>;
+    setCandidateProgression: (workspaceId: string, mode: CandidateProgressionMode) => Promise<CandidateProgressionSettings>;
   };
   workers: {
     list: (workspaceId: string) => Promise<WorkerConversation[]>;

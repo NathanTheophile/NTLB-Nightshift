@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import type { PlannerExecutionMode, PlannerTask, PlannerTaskStatus, Workspace } from '@shared/domain/entities';
-import type { PlannerSelectionCatalog } from '@shared/contracts/ipc';
+import type { CandidateProgressionMode, PlannerSelectionCatalog } from '@shared/contracts/ipc';
 
 import { assets } from '../assets';
 import { EmptyState } from './EmptyState';
@@ -35,6 +35,7 @@ export const PlannerView = ({ workspace, onError, onTaskDeleted }: PlannerViewPr
   const [concurrency, setConcurrency] = useState<1 | 2 | 3 | 4>(2);
   const [timeoutMs, setTimeoutMs] = useState<1_800_000 | 3_600_000 | 5_400_000 | 7_200_000>(5_400_000);
   const [queuePaused, setQueuePaused] = useState(false);
+  const [candidateProgression, setCandidateProgression] = useState<CandidateProgressionMode>('candidate_only');
 
   useEffect(() => {
     let active = true;
@@ -54,6 +55,7 @@ export const PlannerView = ({ workspace, onError, onTaskDeleted }: PlannerViewPr
       if (active) setTimeoutMs(value.timeoutMs);
     }).catch((error: unknown) => onError(messageFrom(error)));
     void window.nightShift.planner.getQueueState().then((value) => { if (active) setQueuePaused(value.paused); }).catch((error: unknown) => onError(messageFrom(error)));
+    void window.nightShift.runs.getCandidateProgression(workspace.id).then((value) => { if (active) setCandidateProgression(value.mode); }).catch((error: unknown) => onError(messageFrom(error)));
     const interval = window.setInterval(refresh, 1_500);
     return () => {
       active = false;
@@ -100,6 +102,7 @@ export const PlannerView = ({ workspace, onError, onTaskDeleted }: PlannerViewPr
     try { setQueuePaused((await window.nightShift.planner.setQueueState(!queuePaused)).paused); }
     catch (error) { onError(messageFrom(error)); }
   };
+  const updateCandidateProgression = async (mode: CandidateProgressionMode): Promise<void> => { try { setCandidateProgression((await window.nightShift.runs.setCandidateProgression(workspace.id, mode)).mode); } catch (error) { onError(messageFrom(error)); } };
   const updatePriority = async (taskId: string, value: number): Promise<void> => {
     try { const task = await window.nightShift.planner.updateQueuedPriority(taskId, value); setTasks((current) => current.map((item) => item.id === task.id ? task : item).sort(compareTasks)); }
     catch (error) { onError(messageFrom(error)); }
@@ -208,6 +211,14 @@ export const PlannerView = ({ workspace, onError, onTaskDeleted }: PlannerViewPr
             <span>Timeout Run</span>
             <select aria-label="Timeout Run" value={timeoutMs} onChange={(event) => void updateTimeout(Number(event.target.value) as typeof timeoutMs)}>
               {[30, 60, 90, 120].map((minutes) => <option value={minutes * 60_000} key={minutes}>{minutes} min</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Candidats</span>
+            <select aria-label="Progression des candidats" value={candidateProgression} onChange={(event) => void updateCandidateProgression(event.target.value as CandidateProgressionMode)}>
+              <option value="candidate_only">Candidats uniquement (manuel)</option>
+              <option value="auto_review">Revue automatique</option>
+              <option value="auto_review_integrate">Revue + intégration automatiques</option>
             </select>
           </label>
         </div>

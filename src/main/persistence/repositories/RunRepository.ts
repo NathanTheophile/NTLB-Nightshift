@@ -31,6 +31,7 @@ export class RunRepository {
   public find(id: string): Run | undefined { const row = this.database.queryOne<RunRow>('SELECT * FROM runs WHERE id = ?', id); return row ? mapRun(row) : undefined; }
   public findRequired(id: string): Run { const run = this.find(id); if (!run) throw new Error(`Run ${id} was not found.`); return run; }
   public list(workspaceId: string): Run[] { return this.database.queryAll<RunRow>('SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at DESC', workspaceId).map(mapRun); }
+  public publishedValidated(workspaceId: string): Run[] { return this.database.queryAll<RunRow>("SELECT * FROM runs WHERE workspace_id = ? AND status = 'completed' AND candidate_publish_state = 'published' AND candidate_commit_sha IS NOT NULL AND validation_status = 'passed' ORDER BY COALESCE(candidate_published_at, created_at), created_at, id", workspaceId).map(mapRun); }
   public listByTask(taskId: string): Run[] { return this.database.queryAll<RunRow>('SELECT * FROM runs WHERE task_id = ? ORDER BY created_at', taskId).map(mapRun); }
   public setPreparation(id: string, baseSha: string, worktreePath: string): Run { this.update(id, { base_sha: baseSha, worktree_path: worktreePath }); return this.findRequired(id); }
   public setBaseSha(id: string, baseSha: string): Run { this.update(id, { base_sha: baseSha }); return this.findRequired(id); }
