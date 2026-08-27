@@ -79,7 +79,7 @@ export class GitWorktreeService implements WorktreeService {
   }
 }
 
-const linkSourceDependencies = async (repositoryRoot: string, worktreePath: string): Promise<void> => {
+export const linkSourceDependencies = async (repositoryRoot: string, worktreePath: string): Promise<void> => {
   const source = join(repositoryRoot, 'node_modules');
   if (!await isRealDirectory(source)) return;
 
@@ -88,7 +88,7 @@ const linkSourceDependencies = async (repositoryRoot: string, worktreePath: stri
   await symlink(source, destination, 'junction');
 };
 
-const removeDependencyJunction = async (worktreePath: string): Promise<void> => {
+export const removeDependencyJunction = async (worktreePath: string): Promise<void> => {
   const destination = join(worktreePath, 'node_modules');
   let entry;
   try { entry = await lstat(destination); } catch (error) { if (isMissing(error)) return; throw error; }

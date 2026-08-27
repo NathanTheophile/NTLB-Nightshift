@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { access, cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -167,6 +167,23 @@ describe('ReviewIntegrationService integration', () => {
       await fixture.advanceDev('unrelated-remote');
       const result = await fixture.service.integrate(review.id);
       expect(result).not.toMatchObject({ integrationStatus: 'integrated' }); expect(result.staleAt).toBeTruthy();
+    } finally { await fixture.dispose(); }
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('ReviewIntegrationService integration dependency junctions', () => {
+  it.each(['manual', 'automatic'] as const)('runs deterministic validation with source dependencies during %s integration and safely cleans up', async (mode) => {
+    const fixture = await setup({ validator: new SupervisedIntegrationValidator() });
+    const modulePath = join(fixture.repository, 'node_modules', 'nightshift-local-validation-tool'); const sentinel = join(modulePath, 'sentinel.txt');
+    try {
+      const validationCommand = "node -e \"require('nightshift-local-validation-tool')()\"";
+      await fixture.advanceDev(`${JSON.stringify({ scripts: { typecheck: validationCommand, lint: validationCommand, test: validationCommand, build: validationCommand } })}\n`, 'package.json');
+      await mkdir(modulePath, { recursive: true }); await writeFile(join(modulePath, 'index.js'), "module.exports = () => process.stdout.write('local validation tool\\n');\n"); await writeFile(sentinel, 'source-owned\n');
+      const run = await fixture.publishedCandidate(`${mode}-local-tool`);
+      const result = mode === 'manual'
+        ? await fixture.service.integrate((await fixture.requestPass(run.id)).id)
+        : (fixture.settings.set(candidateProgressionKey(fixture.workspace.id), 'auto_review_integrate'), await fixture.service.resumeAutomaticWork(), fixture.reviews.latest(run.id)!);
+      expect(result).toMatchObject({ integrationStatus: 'integrated' }); expect(result.integrationValidation).toContain('$ npm run build'); expect(await readFile(sentinel, 'utf8')).toBe('source-owned\n');
     } finally { await fixture.dispose(); }
   });
 });
